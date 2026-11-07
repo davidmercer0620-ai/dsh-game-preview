@@ -399,6 +399,21 @@ const frameRoute = await callRoute('/api/game-preview/frame')
 console.log('route frame (idle)', frameRoute.status, frameRoute.type)
 if (frameRoute.status !== 204) throw new Error('an idle capture must answer 204, got ' + frameRoute.status)
 
+// static games are also served as one self-contained HTML for blob playback
+const cocosDir = join(nested, 'cocos')
+const bundleRoute = routes.get('/api/game-preview/bundle')
+const bundleRes = await bundleRoute.fetch(new Request('http://x/api/game-preview/bundle?root=' + encodeURIComponent(cocosDir) + '&file=index.html'))
+const bundleHtml = await bundleRes.text()
+console.log('route bundle', bundleRes.status, bundleHtml.length + 'B', 'inlined js:', bundleHtml.includes('nested-js'))
+if (bundleRes.status !== 200) throw new Error('bundle route failed: ' + bundleRes.status)
+if (!bundleHtml.includes('nested-js')) throw new Error('bundle did not inline the sibling script')
+if (/<script[^>]+src="main\.js"/.test(bundleHtml)) throw new Error('bundle left the external script reference in place')
+
+const unregistered = routes.get('/api/game-preview/bundle')
+const blockedBundle = await unregistered.fetch(new Request('http://x/api/game-preview/bundle?root=' + encodeURIComponent('C:\\\\Windows') + '&file=win.ini'))
+console.log('bundle unregistered root', blockedBundle.status)
+if (blockedBundle.status !== 403) throw new Error('bundle must refuse unregistered roots')
+
 const rootsRoute = await callRoute('/api/game-preview/roots')
 console.log('route roots', rootsRoute.status, rootsRoute.body.roots.length)
 if (!Array.isArray(rootsRoute.body.roots)) throw new Error('same-origin roots returned no array')

@@ -17,6 +17,23 @@ const SUPPORTED = process.platform === 'win32'
 const PING_TIMEOUT_MS = 8000
 const LIST_TIMEOUT_MS = 4000
 
+// Desktop shells, overlays and IME ghosts are never the game; capturing them
+// only produces a black stage and a confused user.
+const JUNK_TITLE = [
+  /^Program Manager$/i,
+  /NVIDIA GeForce Overlay/i,
+  /Microsoft Text Input Application/i,
+  /^Default IME$/i,
+  /^MSCTFIME/i,
+  /^DesktopWindowXamlSource$/i,
+  /^$ /,
+]
+
+function isJunkWindow(window) {
+  if (!window?.title) return true
+  return JUNK_TITLE.some((re) => re.test(window.title))
+}
+
 function powershellPath() {
   const root = process.env.SystemRoot ?? 'C:\\Windows'
   const full = join(root, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe')
@@ -148,7 +165,8 @@ export class WindowCapture {
         } catch {
           title = ''
         }
-        this.#pendingList.rows.push({ hwnd: Number(hwnd), pid: Number(pid), width: Number(w), height: Number(h), title })
+        const row = { hwnd: Number(hwnd), pid: Number(pid), width: Number(w), height: Number(h), title }
+        if (!isJunkWindow(row)) this.#pendingList.rows.push(row)
         break
       }
       case 'END': {

@@ -187,6 +187,66 @@ function nativeLaunch(cfg, config, root) {
   return { error: `未知的原生引擎：${cfg.engine}` }
 }
 
+/* ------------------------------------------------------------- html bundle */
+
+const BUNDLE_MAX_BYTES = 12 * 1024 * 1024
+
+function inlineAsset(dir, rel) {
+  try {
+    const file = resolve(dir, rel)
+    if (file !== dir && !file.startsWith(dir + sep)) return null
+    const stat = statSync(file)
+    if (!stat.isFile() || stat.size > BUNDLE_MAX_BYTES) return null
+    return { file, data: readFileSync(file), ext: file.slice(file.lastIndexOf('.')).toLowerCase() }
+  } catch {
+    return null
+  }
+}
+
+/**
+ * Turn a multi-file static game into one HTML string: scripts and stylesheets
+ * are inlined and same-directory media becomes data URLs, so the page can run
+ * from a blob URL where a file:// host cannot reach a loopback server.
+ */
+function bundleHtml(dir, entryRel) {
+  const entry = inlineAsset(dir, entryRel || 'index.html')
+  if (!entry) throw new Error(`找不到入口文件：${entryRel || 'index.html'}`)
+  let html = entry.data.toString('utf8')
+  const dirOfEntry = dirname(resolve(dir, entryRel || 'index.html'))
+  const warned = new Set()
+
+  html = html.replace(/<script\b[^>]*\bsrc\s*=\s*["']([^"']+)["'][^>]*>\s*<\/script>/gi, (match, src) => {
+    if (/^(https?:|data:|\/\/)/i.test(src)) return match
+    const asset = inlineAsset(dirOfEntry, src)
+    if (!asset) {
+      warned.add(src)
+      return match
+    }
+    return `<script>\n${asset.data.toString('utf8')}\n</script>`
+  })
+
+  html = html.replace(/<link\b[^>]*\brel\s*=\s*["']stylesheet["'][^>]*\bhref\s*=\s*["']([^"']+)["'][^>]*>/gi, (match, href) => {
+    if (/^(https?:|data:|\/\/)/i.test(href)) return match
+    const asset = inlineAsset(dirOfEntry, href)
+    if (!asset) {
+      warned.add(href)
+      return match
+    }
+    return `<style>\n${asset.data.toString('utf8')}\n</style>`
+  })
+
+  // same-directory images referenced from markup or CSS
+  html = html.replace(/(["'])([\.\/\w-]+\.(?:png|jpe?g|webp|gif|svg|ico))\1/gi, (match, quote, ref) => {
+    if (/^(https?:|data:)/i.test(ref)) return match
+    const asset = inlineAsset(dirOfEntry, ref)
+    if (!asset) return match
+    const mime = MIME[asset.ext] ?? 'application/octet-stream'
+    return `${quote}data:${mime};base64,${asset.data.toString('base64')}${quote}`
+  })
+
+  return { html, inlined: [...warned] }
+}
+
 /* --------------------------------------------------- same-origin responses */
 
 const API_PREFIX = '/api/game-preview'
@@ -1193,6 +1253,9 @@ export function apply(ctx, config = {}) {
       state.active = {
         id: cfg.id, title: cfg.title, kind: 'file',
         url: `${originOf()}/static/${staticToken(workdir)}/${encodeURIComponent(cfg.file)}`,
+        // same-origin bundle: the panel can play this from a blob URL even when
+        // the desktop page cannot reach the loopback server at all
+        bundlePath: `${API_PREFIX}/bundle?root=${encodeURIComponent(workdir)}&file=${encodeURIComponent(cfg.file)}`,
         startedAt: Date.now(),
       }
       return { ...snapshot(state.lastRoot), waitedMs: 0 }
@@ -1518,6 +1581,22 @@ export function apply(ctx, config = {}) {
         status: 200,
         headers: { 'content-type': 'image/jpeg', 'cache-control': 'no-store', 'x-frame-seq': String(frame.seq) },
       })
+    })
+
+    add(`${API_PREFIX}/bundle`, ['GET'], (request) => {
+      const params = urlOf(request, originOf())
+      const dir = resolve(params.get('root') ?? '')
+      const file = params.get('file') ?? 'index.html'
+      if (!staticRoots.has(dir)) return jsonResponse({ ok: false, error: 'root not registered' }, 403)
+      try {
+        const bundle = bundleHtml(dir, file)
+        return new Response(bundle.html, {
+          status: 200,
+          headers: { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' },
+        })
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+      }
     })
 
     add(`${API_PREFIX}/log`, ['GET'], () =>

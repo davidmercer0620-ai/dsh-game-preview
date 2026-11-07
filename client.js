@@ -215,6 +215,51 @@ window.__ModuleLoader__.load({
       return h('img', { className: 'gp-shot', src: src ?? undefined, alt: alt ?? 'game window', onError })
     }
 
+    /**
+     * Static games: prefer the Host's single-file bundle so the page can run
+     * from a blob URL (a file:// host cannot reach the loopback server), and
+     * fall back to the served directory URL when bundling is unavailable.
+     */
+    function GameStage({ bundlePath, fallbackUrl, reloadKey, width, title }) {
+      // without a bundle the served URL can render right away
+      const [src, setSrc] = useState(bundlePath ? null : fallbackUrl)
+      useEffect(() => {
+        let alive = true
+        let created = null
+        if (!bundlePath) {
+          setSrc(fallbackUrl)
+          return undefined
+        }
+        ;(async () => {
+          try {
+            const res = await fetch(`${bundlePath}&t=${Date.now()}`, { headers: { 'x-game-preview': '1' } })
+            if (!res.ok) throw new Error(`HTTP ${res.status}`)
+            const html = await res.text()
+            created = URL.createObjectURL(new Blob([html], { type: 'text/html' }))
+            if (alive) setSrc(created)
+          } catch {
+            if (alive) setSrc(fallbackUrl)
+          }
+        })()
+        return () => {
+          alive = false
+          if (created) URL.revokeObjectURL(created)
+        }
+      }, [bundlePath, fallbackUrl, reloadKey])
+
+      if (!src) return h('div', { className: 'gp-empty' }, h('div', { className: 'gp-note' }, '正在打包游戏…'))
+      return h('iframe', {
+        key: `${src}#${width}`,
+        className: 'gp-frame',
+        src,
+        'data-narrow': width > 0 ? '1' : '0',
+        style: width > 0 ? { width: WIDTHS[width], maxWidth: '100%' } : undefined,
+        title: title ?? 'game preview',
+        sandbox: 'allow-scripts allow-pointer-lock allow-popups allow-modals',
+        allow: 'autoplay; fullscreen; gamepad',
+      })
+    }
+
     /* ------------------------------------------------------------- panel */
 
     function Panel() {
@@ -435,6 +480,10 @@ window.__ModuleLoader__.load({
           liveBadges.push(h('span', { key: 'stale', 'data-warn': '1' }, capture?.errorCode === 'window-closed' ? '窗口已关闭' : '已断流'))
         }
         if (capture?.width) liveBadges.push(h('span', { key: 'size' }, `${capture.width}×${capture.height}`))
+        if (active?.windowTitle) {
+          liveBadges.push(h('span', { key: 'win', title: active.windowTitle },
+            String(active.windowTitle).slice(0, 28)))
+        }
       }
 
       const stage = url
@@ -450,14 +499,12 @@ window.__ModuleLoader__.load({
               }),
               liveBadges.length ? h('div', { className: 'gp-live' }, liveBadges) : null)
           : h('div', { className: 'gp-stage' },
-              h('iframe', {
-                key: `${url}#${reloadKey}#${width}`,
-                className: 'gp-frame',
-                src: url,
-                'data-narrow': width > 0 ? '1' : '0',
-                style: width > 0 ? { width: WIDTHS[width], maxWidth: '100%' } : undefined,
-                title: 'game preview',
-                allow: 'autoplay; fullscreen; gamepad',
+              h(GameStage, {
+                bundlePath: active?.bundlePath,
+                fallbackUrl: url,
+                reloadKey,
+                width,
+                title: active?.title ?? 'game preview',
               }))
         : empty
 
@@ -530,7 +577,11 @@ window.__ModuleLoader__.load({
             : (health.error ?? '正在连接宿主…'),
           h('button', { className: 'gp-btn', disabled: busy, onClick: () => void reconnect() }, '重新连接')),
         error ? h('div', { className: 'gp-err' }, error) : null,
-        blackHint ? h('div', { className: 'gp-hint' }, blackHint) : null,
+        blackHint
+          ? h('div', { className: 'gp-hint' },
+              blackHint,
+              canCapture ? h('button', { className: 'gp-btn', style: { marginLeft: 8 }, onClick: () => void openPicker() }, '换一个窗口') : null)
+          : null,
         stage,
         h('div', { className: 'gp-bar' },
           h('button', { className: 'gp-btn', 'data-primary': '1', disabled: busy || !configs.length, onClick: () => void run(active?.id) }, '▶ 运行'),
