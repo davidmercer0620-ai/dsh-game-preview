@@ -131,10 +131,11 @@ Client 与 Host 之间**不依赖任何 Harness 内部 API**：面板探测 7317
 
 ```bash
 node --check index.js && node --check client.js
-node scripts/harness.mjs    # 用桩 Context 跑一遍 Host：检测、启动、静态服务、脏计数、三个工具
+node scripts/harness.mjs          # Host：控制 API、检测、启动、静态服务、脏计数、三个工具
+node scripts/client-harness.mjs   # Client：模块注册、tab 类型、两个槽位、舞台与脏标记渲染
 ```
 
-`scripts/harness.mjs` 不需要 Harness 进程，改完 Host 先跑它。
+两个 harness 都不需要 Harness 进程，改完先跑它们。
 
 ## License
 

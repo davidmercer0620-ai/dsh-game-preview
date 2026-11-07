@@ -60,6 +60,42 @@ for (const name of toolNames) {
   console.log(' →', name, String(out).slice(0, 90))
 }
 
+/* ------------------------------------------- engine detection fixtures */
+
+async function detectOf(dir) {
+  const res = await fetch(base + '/api/detect', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ root: dir }),
+  })
+  return res.json()
+}
+
+const wechat = join(tmpdir(), 'dgp-wechat')
+rmSync(wechat, { recursive: true, force: true })
+mkdirSync(wechat, { recursive: true })
+writeFileSync(join(wechat, 'project.config.json'), '{"appid":"wx-test"}')
+writeFileSync(join(wechat, 'game.json'), '{"deviceOrientation":"portrait"}')
+const wechatDetect = await detectOf(wechat)
+console.log('wechat configs', wechatDetect.configs.map((c) => c.id).join(','))
+const wechatRun = await (await fetch(base + '/api/run', {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ configId: 'wechat' }),
+})).json()
+console.log('wechat run', wechatRun.ok, '|', wechatRun.error)
+if (wechatRun.ok) throw new Error('wechat run should fail without the devtools cli')
+if (!/cli\.bat/.test(wechatRun.error)) throw new Error('wechat error must name cli.bat, got: ' + wechatRun.error)
+
+const cocos = join(tmpdir(), 'dgp-cocos')
+rmSync(cocos, { recursive: true, force: true })
+mkdirSync(join(cocos, 'assets'), { recursive: true })
+mkdirSync(join(cocos, 'settings'), { recursive: true })
+const cocosDetect = await detectOf(cocos)
+console.log('cocos configs', cocosDetect.configs.map((c) => `${c.id}@${c.url}`).join(','))
+const cocosCfg = cocosDetect.configs.find((c) => c.id === 'cocos-web')
+if (!cocosCfg || cocosCfg.url !== 'http://localhost:7456') throw new Error('cocos detection is wrong')
+
 for (const d of effects) { try { d?.() } catch {} }
 rmSync(root, { recursive: true, force: true })
+rmSync(wechat, { recursive: true, force: true })
+rmSync(cocos, { recursive: true, force: true })
 process.exit(0)
