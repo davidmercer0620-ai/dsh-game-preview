@@ -15,7 +15,13 @@ import { WindowCapture } from './host/window.js'
 export const inject = ['tools']
 
 const APP_ID = 'dsh-game-preview'
-const VERSION = '0.2.0'
+const VERSION = (() => {
+  try {
+    return JSON.parse(readFileSync(join(dirname(fileURLToPath(import.meta.url)), 'package.json'), 'utf8')).version
+  } catch {
+    return '0.0.0'
+  }
+})()
 const BASE_PORT = 7317
 const PORT_TRIES = 16
 const HERE = dirname(fileURLToPath(import.meta.url))
@@ -64,6 +70,26 @@ function isDir(root, p) {
 function ignored(rel) {
   const parts = rel.split(/[\\/]/)
   return parts.some((part) => IGNORE.includes(part))
+}
+
+const MIME = {
+  '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8',
+  '.json': 'application/json; charset=utf-8', '.map': 'application/json; charset=utf-8',
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.gif': 'image/gif', '.svg': 'image/svg+xml', '.ico': 'image/x-icon',
+  '.wav': 'audio/wav', '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.m4a': 'audio/mp4',
+  '.woff': 'font/woff', '.woff2': 'font/woff2', '.ttf': 'font/ttf',
+  '.wasm': 'application/wasm', '.mp4': 'video/mp4', '.webm': 'video/webm',
+}
+
+function mimeOf(file) {
+  const ext = file.slice(file.lastIndexOf('.')).toLowerCase()
+  return MIME[ext] ?? 'application/octet-stream'
+}
+
+function staticToken(dir) {
+  return Buffer.from(dir, 'utf8').toString('base64url')
 }
 
 function portOf(url, fallback) {
@@ -163,25 +189,54 @@ function nativeLaunch(cfg, config, root) {
 
 /* ------------------------------------------------------------- detection */
 
-function guessDevUrl(pkg) {
-  const script = String(pkg?.scripts?.dev ?? '') + ' ' + String(pkg?.scripts?.start ?? '')
-  const port = /(?:--port[= ]|PORT=)(\d{2,5})/.exec(script)?.[1]
-  const framework = pkg?.dependencies?.next ? 'next' : pkg?.dependencies?.vite ? 'vite' : null
-  const resolved = port ?? (framework === 'next' ? '3000' : framework === 'vite' ? '5173' : '5173')
-  return `http://localhost:${resolved}`
+const SCRIPT_ORDER = ['dev', 'start', 'serve', 'preview']
+
+/** First runnable package script, in the order a game project usually wants it. */
+function pickScript(pkg) {
+  for (const name of SCRIPT_ORDER) {
+    const body = pkg?.scripts?.[name]
+    if (typeof body === 'string' && body.trim()) return { name, body }
+  }
+  return null
 }
 
-function detect(root) {
-  const configs = []
-  const pkg = has(root, 'package.json') ? safeJson(join(root, 'package.json')) : null
+/** A port from the script itself, or from the file it runs (tools/serve.mjs often hardcodes one). */
+function guessDevUrl(dir, pkg, script) {
+  const body = String(script?.body ?? '')
+  const inline = /(?:--port[= ]|\bPORT=)(\d{2,5})/.exec(body)?.[1]
+  if (inline) return `http://localhost:${inline}`
+
+  const file = /node\s+(?:\.\/)?([\w./-]+\.(?:mjs|js|cjs|ts))/.exec(body)?.[1]
+  if (file) {
+    try {
+      const text = readFileSync(join(dir, file), 'utf8').slice(0, 8000)
+      const port =
+        /(?:PORT\s*=\s*|listen\s*\(\s*|port\s*[:=]\s*)(\d{4,5})/.exec(text)?.[1] ??
+        /localhost:(\d{4,5})/.exec(text)?.[1]
+      if (port) return `http://localhost:${port}`
+    } catch {}
+  }
+
+  const deps = { ...(pkg?.dependencies ?? {}), ...(pkg?.devDependencies ?? {}) }
+  if (deps.next) return 'http://localhost:3000'
+  if (deps.vite) return 'http://localhost:5173'
+  if (deps['@vue/cli-service']) return 'http://localhost:8080'
+  return 'http://localhost:5173'
+}
+
+/** Configs this one directory can offer. `dir` is relative to the scanned root. */
+function configsAt(dir, rel, pkg) {
+  const out = []
+  const label = rel === '.' ? '' : `（${rel}）`
+  const dirField = rel === '.' ? undefined : rel
 
   // Cocos Creator: settings/ + assets/, or a settings/v2 tree
-  const cocos = (has(root, 'settings') && has(root, 'assets')) || has(root, 'settings/v2')
-  if (cocos) {
-    configs.push({
-      id: 'cocos-web',
+  if ((has(dir, 'settings') && has(dir, 'assets')) || has(dir, 'settings/v2')) {
+    out.push({
+      id: rel === '.' ? 'cocos-web' : `cocos-web@${rel}`,
+      dir: dirField,
       kind: 'web',
-      title: 'Cocos · Web',
+      title: `Cocos · Web${label}`,
       detail: '编辑器预览 :7456（HMR）',
       url: 'http://localhost:7456',
       estimatedMs: 1200,
@@ -190,11 +245,12 @@ function detect(root) {
   }
 
   // WeChat mini game project (usually produced by Cocos)
-  if (has(root, 'project.config.json') && has(root, 'game.json')) {
-    configs.push({
-      id: 'wechat',
+  if (has(dir, 'project.config.json') && has(dir, 'game.json')) {
+    out.push({
+      id: rel === '.' ? 'wechat' : `wechat@${rel}`,
+      dir: dirField,
       kind: 'wechat',
-      title: '微信小游戏',
+      title: `微信小游戏${label}`,
       detail: '构建目录 + 开发者工具',
       projectPath: '.',
       estimatedMs: 90000,
@@ -203,24 +259,26 @@ function detect(root) {
   }
 
   // Godot / Unity: native window capture (v0.2)
-  if (has(root, 'project.godot')) {
-    configs.push({
-      id: 'godot-native',
+  if (has(dir, 'project.godot')) {
+    out.push({
+      id: rel === '.' ? 'godot-native' : `godot-native@${rel}`,
+      dir: dirField,
       kind: 'native',
       engine: 'godot',
-      title: 'Godot · 原生',
+      title: `Godot · 原生${label}`,
       detail: '运行主场景 + 窗口捕获',
       windowMatch: 'Godot|游戏|Game',
       estimatedMs: 6000,
       reload: 'manual',
     })
   }
-  if (has(root, 'ProjectSettings') && has(root, 'Assets')) {
-    configs.push({
-      id: 'unity-native',
+  if (has(dir, 'Assets') && (has(dir, 'ProjectSettings') || has(dir, 'ProjectSettings/ProjectVersion.txt'))) {
+    out.push({
+      id: rel === '.' ? 'unity-native' : `unity-native@${rel}`,
+      dir: dirField,
       kind: 'native',
       engine: 'unity',
-      title: 'Unity · 原生',
+      title: `Unity · 原生${label}`,
       detail: '打开编辑器 + 窗口捕获',
       windowMatch: 'Unity',
       estimatedMs: 8000,
@@ -228,31 +286,75 @@ function detect(root) {
     })
   }
 
-  // Generic node dev server
-  if (pkg?.scripts?.dev || pkg?.scripts?.start) {
-    configs.push({
-      id: 'node-dev',
+  // Generic node dev server, including serve/preview style scripts
+  const script = pickScript(pkg)
+  if (script) {
+    out.push({
+      id: rel === '.' ? 'node-dev' : `node-dev@${rel}`,
+      dir: dirField,
       kind: 'web',
-      title: 'Web · dev server',
-      detail: pkg?.scripts?.dev ? 'npm run dev' : 'npm start',
-      url: guessDevUrl(pkg),
-      cmd: pkg?.scripts?.dev ? 'npm run dev' : 'npm start',
+      title: `Web · ${script.name}${label}`,
+      detail: `npm run ${script.name}`,
+      url: guessDevUrl(dir, pkg, script),
+      cmd: `npm run ${script.name}`,
       estimatedMs: 5000,
       reload: 'hmr',
     })
   }
 
   // Static single page
-  if (!configs.length && (has(root, 'index.html') || listDir(root).some((n) => n.endsWith('.html')))) {
-    configs.push({
-      id: 'static',
+  const html = has(dir, 'index.html') ? 'index.html' : listDir(dir).find((n) => n.toLowerCase().endsWith('.html') && !n.startsWith('.'))
+  if (html) {
+    out.push({
+      id: rel === '.' ? 'static' : `static@${rel}`,
+      dir: dirField,
       kind: 'web',
-      title: '静态 HTML',
+      title: `静态 HTML${label}`,
       detail: '本地文件',
-      file: has(root, 'index.html') ? 'index.html' : listDir(root).find((n) => n.endsWith('.html')),
+      file: html,
       estimatedMs: 200,
       reload: 'manual',
     })
+  }
+
+  return out
+}
+
+/**
+ * Scan the workspace root and its immediate subdirectories. Game projects are
+ * routinely nested (a WeChat shell with the real Cocos project in `cocos/`), so
+ * a root-only check reports "nothing detected" on perfectly good projects.
+ */
+function detect(root) {
+  const configs = []
+  const seen = new Set()
+  const add = (cfg) => {
+    const key = `${cfg.kind}:${cfg.dir ?? '.'}:${cfg.id}`
+    if (seen.has(key)) return
+    seen.add(key)
+    configs.push(cfg)
+  }
+
+  const rootPkg = has(root, 'package.json') ? safeJson(join(root, 'package.json')) : null
+  for (const cfg of configsAt(root, '.', rootPkg)) add(cfg)
+
+  let subdirs = []
+  try {
+    subdirs = readdirSync(root).filter((name) => !name.startsWith('.') && !IGNORE.includes(name))
+  } catch {
+    subdirs = []
+  }
+  for (const name of subdirs) {
+    const dir = join(root, name)
+    let stat = null
+    try {
+      stat = statSync(dir)
+    } catch {
+      continue
+    }
+    if (!stat.isDirectory()) continue
+    const pkg = has(dir, 'package.json') ? safeJson(join(dir, 'package.json')) : null
+    for (const cfg of configsAt(dir, name.split(sep).join('/'), pkg)) add(cfg)
   }
 
   if (!configs.length) {
@@ -272,6 +374,76 @@ export function apply(ctx, config = {}) {
     helperPath: join(HERE, 'host', 'window-capture.ps1'),
     logger: log,
   })
+
+  /* -- which workspace is the panel looking at ------------------------- */
+
+  function timestampOf(candidate) {
+    const session = candidate?.session ?? candidate
+    const raw = session?.header?.createdAt ?? session?.createdAt ?? candidate?.createdAt ?? 0
+    const n = Number(raw)
+    return Number.isFinite(n) ? n : 0
+  }
+
+  /** Working directory of a live Agent, whichever shape the services expose. */
+  function dirOfAgent(candidate) {
+    const wd = ctx.get('workingDirectory')
+    for (const target of [candidate?.session, candidate]) {
+      if (!target) continue
+      try {
+        const dir = wd?.get?.(target)
+        if (typeof dir === 'string' && dir) return dir
+      } catch {}
+      try {
+        const dir = target?.header?.cwd ?? target?.cwd
+        if (typeof dir === 'string' && dir) return dir
+      } catch {}
+    }
+    return null
+  }
+
+  function liveAgentDirs() {
+    const agents = ctx.get('agents')
+    let list = []
+    try {
+      list = agents?.roots?.() ?? agents?.list?.() ?? []
+    } catch {}
+    return list
+      .map((agent) => ({ dir: dirOfAgent(agent), at: timestampOf(agent) }))
+      .filter((row) => row.dir)
+      .sort((a, b) => b.at - a.at)
+  }
+
+  /**
+   * The panel has no Session of its own, and the Host only learns a workspace
+   * from a tool call. Without this, opening the tab in a fresh session shows
+   * "nothing detected" even for a perfectly valid game project.
+   */
+  function discoverRoot(sessionId) {
+    if (sessionId) {
+      const agents = ctx.get('agents')
+      let agent = null
+      try {
+        agent = agents?.get?.(sessionId)
+      } catch {}
+      const dir = agent ? dirOfAgent(agent) : null
+      try {
+        if (dir && existsSync(dir)) return resolve(dir)
+      } catch {}
+    }
+    const hit = liveAgentDirs().find((row) => {
+      try {
+        return existsSync(row.dir)
+      } catch {
+        return false
+      }
+    })
+    if (hit) return resolve(hit.dir)
+    try {
+      const fallback = ctx.get('workingDirectory')?.defaultDirectory
+      if (fallback && existsSync(fallback)) return resolve(fallback)
+    } catch {}
+    return null
+  }
 
   /* -- workspace bookkeeping ------------------------------------------- */
 
@@ -457,6 +629,7 @@ export function apply(ctx, config = {}) {
   /* -- HTTP control API ------------------------------------------------- */
 
   const servedPorts = []
+  const staticRoots = new Set() // absolute directories the static route may serve
   let server = null
 
   function allowedOrigins() {
@@ -581,14 +754,16 @@ export function apply(ctx, config = {}) {
     }
 
     if (path === '/api/state') {
-      const root = url.searchParams.get('root') ?? state.lastRoot ?? undefined
+      const explicit = url.searchParams.get('root') ?? undefined
+      const sessionId = url.searchParams.get('session') ?? undefined
+      const root = explicit ?? state.lastRoot ?? discoverRoot(sessionId) ?? undefined
       send(res, headers, snapshot(root ?? undefined))
       return
     }
 
     if (path === '/api/detect') {
       const body = await readBody(req)
-      const target = body?.root ?? state.lastRoot
+      const target = body?.root ?? state.lastRoot ?? discoverRoot(body?.session)
       if (!target) {
         send(res, headers, { ok: false, error: '需要一个项目目录：把路径填进面板，或在对话里说一次工作区' }, 400)
         return
@@ -636,6 +811,20 @@ export function apply(ctx, config = {}) {
     }
 
     /* -- native window capture ---------------------------------------- */
+
+    if (path === '/api/roots') {
+      const seenDirs = new Set()
+      const roots = liveAgentDirs()
+        .map((row) => resolve(row.dir))
+        .filter((dir) => {
+          if (seenDirs.has(dir)) return false
+          seenDirs.add(dir)
+          return true
+        })
+        .map((dir) => ({ dir, at: 0 }))
+      send(res, headers, { ok: true, roots, current: state.lastRoot ?? discoverRoot() ?? null })
+      return
+    }
 
     if (path === '/api/window/list') {
       try {
@@ -711,6 +900,44 @@ export function apply(ctx, config = {}) {
       return
     }
 
+    // static directory serving: relative URLs inside the game keep working
+    if (path.startsWith('/static/')) {
+      const rest = path.slice('/static/'.length)
+      const slash = rest.indexOf('/')
+      const token = slash === -1 ? rest : rest.slice(0, slash)
+      let dir = ''
+      try {
+        dir = resolve(Buffer.from(token, 'base64url').toString('utf8'))
+      } catch {
+        send(res, headers, { ok: false, error: 'bad root token' }, 400)
+        return
+      }
+      if (!staticRoots.has(dir)) {
+        send(res, headers, { ok: false, error: 'root not registered' }, 403)
+        return
+      }
+      let rel = ''
+      try {
+        rel = decodeURIComponent(slash === -1 ? '' : rest.slice(slash + 1))
+      } catch {
+        send(res, headers, { ok: false, error: 'bad path' }, 400)
+        return
+      }
+      const target = resolve(dir, rel || 'index.html')
+      if (target !== dir && !target.startsWith(dir + sep)) {
+        send(res, headers, { ok: false, error: 'containment' }, 403)
+        return
+      }
+      try {
+        const data = readFileSync(target)
+        res.writeHead(200, { ...headers, 'content-type': mimeOf(target) })
+        res.end(data)
+      } catch {
+        send(res, headers, { ok: false, error: 'not found' }, 404)
+      }
+      return
+    }
+
     // static file serving for single-page games, contained to its root
     if (path === '/file') {
       const root = resolve(url.searchParams.get('root') ?? '')
@@ -719,16 +946,9 @@ export function apply(ctx, config = {}) {
         send(res, headers, { ok: false, error: 'containment' }, 403)
         return
       }
-      const ext = target.slice(target.lastIndexOf('.')).toLowerCase()
-      const types = {
-        '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8',
-        '.css': 'text/css; charset=utf-8', '.json': 'application/json; charset=utf-8',
-        '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
-        '.svg': 'image/svg+xml', '.ico': 'image/x-icon', '.wav': 'audio/wav', '.mp3': 'audio/mpeg',
-      }
       try {
         const data = readFileSync(target)
-        res.writeHead(200, { ...headers, 'content-type': types[ext] ?? 'application/octet-stream' })
+        res.writeHead(200, { ...headers, 'content-type': mimeOf(target) })
         res.end(data)
       } catch {
         send(res, headers, { ok: false, error: 'not found' }, 404)
@@ -748,6 +968,8 @@ export function apply(ctx, config = {}) {
     state.lastError = null
     const entry = ensureRoot(state.lastRoot)
     entry.dirty.clear()
+    // a nested project (root/cocos, root/game) runs from its own directory
+    const workdir = resolve(state.lastRoot, cfg.dir ?? '.')
 
     if (overrideUrl) cfg.url = overrideUrl
 
@@ -774,10 +996,10 @@ export function apply(ctx, config = {}) {
 
     if (cfg.kind === 'native') {
       if (!WindowCapture.supported) throw new Error('窗口捕获只支持 Windows（Win10 1903 及以上）')
-      const launch = nativeLaunch(cfg, config, state.lastRoot)
+      const launch = nativeLaunch(cfg, config, workdir)
       if (launch.error) throw new Error(launch.error)
       const startedAt = Date.now()
-      const child = spawnDirect(launch.exe, launch.args, state.lastRoot, cfg.title)
+      const child = spawnDirect(launch.exe, launch.args, workdir, cfg.title)
       const win = await waitForWindow({
         pid: child.pid,
         titlePattern: cfg.windowMatch,
@@ -807,7 +1029,7 @@ export function apply(ctx, config = {}) {
     if (cfg.kind === 'wechat') {
       const cli = findWechatCli(config)
       if (!cli) throw new Error('没找到微信开发者工具 cli.bat：请在插件配置 wechatCli 里填写绝对路径')
-      const projectPath = resolve(state.lastRoot, cfg.projectPath ?? '.')
+      const projectPath = resolve(workdir, cfg.projectPath ?? '.')
       const args = ['open', '--project', projectPath]
       const child = spawn(`"${cli}"`, { cwd: state.lastRoot, shell: true, windowsHide: true })
       proc.child = child
@@ -826,15 +1048,15 @@ export function apply(ctx, config = {}) {
       return { ...snapshot(state.lastRoot), waitedMs: 0 }
     }
     // Cocos: the editor owns the preview server, so start it when a path is configured
-    if (cfg.id === 'cocos-web' && config.cocosEditor && existsSync(config.cocosEditor)) {
-      spawnDirect(config.cocosEditor, ['--project', state.lastRoot], state.lastRoot, cfg.title)
+    if (String(cfg.id).startsWith('cocos-web') && config.cocosEditor && existsSync(config.cocosEditor)) {
+      spawnDirect(config.cocosEditor, ['--project', workdir], workdir, cfg.title)
     }
-    if (cfg.cmd && !proc.child) spawnCommand(cfg.cmd, state.lastRoot, cfg.title)
+    if (cfg.cmd && !proc.child) spawnCommand(cfg.cmd, workdir, cfg.title)
     if (cfg.file) {
-      const query = `root=${encodeURIComponent(state.lastRoot)}&path=${encodeURIComponent(cfg.file)}`
+      staticRoots.add(workdir)
       state.active = {
         id: cfg.id, title: cfg.title, kind: 'file',
-        url: `${originOf()}/file?${query}`,
+        url: `${originOf()}/static/${staticToken(workdir)}/${encodeURIComponent(cfg.file)}`,
         startedAt: Date.now(),
       }
       return { ...snapshot(state.lastRoot), waitedMs: 0 }
@@ -846,7 +1068,7 @@ export function apply(ctx, config = {}) {
     }
     if (!ok) {
       const seconds = Math.round((Date.now() - started) / 1000)
-      state.lastError = cfg.id === 'cocos-web'
+      state.lastError = String(cfg.id).startsWith('cocos-web')
         ? `Cocos 预览服务 ${cfg.url} 没起来（${seconds}s）。在 Cocos Creator 里点一次「浏览器预览」，或把编辑器路径填进 config.cocosEditor，下次我帮你启动。`
         : `等 ${cfg.url} 超时（${seconds}s）：${cfg.cmd ? '看面板下方日志里 dev server 的报错' : '确认服务已启动'}` 
     }
@@ -1025,14 +1247,14 @@ export function apply(ctx, config = {}) {
     try {
       const agent = exec?.agent
       if (agent) {
-        const dir = ctx.workingDirectory?.get?.(agent)
+        const dir = dirOfAgent(agent)
         if (dir) {
           state.lastRoot = resolve(dir)
           return state.lastRoot
         }
       }
     } catch {}
-    return state.lastRoot ?? process.cwd()
+    return state.lastRoot ?? discoverRoot() ?? process.cwd()
   }
 
   ctx.effect(() => () => {

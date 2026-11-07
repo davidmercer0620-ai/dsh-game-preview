@@ -10,12 +10,13 @@
 | 能力 | 说明 |
 |---|---|
 | 右侧栏舞台 | 会话旁边一个可拖宽的预览面板，Web 预览支持 100% / 768px / 375px 三档宽 |
-| 运行配置自动检测 | 扫工作区识别 Cocos Creator、微信小游戏、Godot、Unity、Node dev server、静态 HTML |
+| 运行配置自动检测 | 扫工作区**和一层子目录**识别 Cocos Creator、微信小游戏、Godot、Unity、Node dev server（dev/start/serve/preview）、静态 HTML |
+| 自动定位工作区 | 面板没有会话上下文时，Host 从活着的 Agent 借当前工作目录；多个会话时标题栏的 `📁` 可切换 |
 | **原生窗口捕获（v0.2）** | Godot / Unity 的原生窗口直接进舞台：抓帧走 `PrintWindow`，JPEG 流 20–25 fps，局部脏帧自动丢弃 |
 | 任意窗口接入 | 面板上的「选择窗口」可以把任何已在运行的窗口接进舞台（不只是游戏） |
 | 脏改动计数 | 保存**不刷新**，面板显示 `● N 处改动待运行`，按 ▶ 或让 agent 跑才重新加载 |
 | Playtest Bar | 运行 / 重载 / 停止 / 切换宽度 / 外部打开 |
-| 本地文件服务 | 单页 HTML 游戏直接从内置 loopback 服务加载，不受 `file://` 限制 |
+| 静态目录服务 | `/static/<root>/…` 按目录服务整包，`main.js`、贴图、字体、wasm 的相对路径都能加载，不受 `file://` 限制 |
 | Agent 工具 | `game_preview_run` / `game_preview_status` / `game_preview_stop` / `game_preview_windows` |
 
 ## 现在还不能做什么（v0.2 的边界）
@@ -66,14 +67,16 @@ plugin_manager install_bundle(target: "C:\\\\path\\\\to\\\\dsh-game-preview")
 
 ## 检测规则
 
+扫描范围：**工作区根目录 + 一层子目录**（游戏工程经常是「微信壳 + `cocos/` 真工程」这种结构）。
+
 | 命中条件 | 配置 | 行为 |
 |---|---|---|
-| `settings/` + `assets/` | Cocos · Web | 连 `http://localhost:7456`（编辑器预览，自带 HMR） |
+| `settings/` + `assets/`（或 `settings/v2`） | Cocos · Web | 连 `http://localhost:7456`（编辑器预览，自带 HMR） |
 | `project.config.json` + `game.json` | 微信小游戏 | 调开发者工具 `cli.bat open --project` |
 | `project.godot` | Godot · 原生 | `godot --path .` 跑主场景 + 窗口捕获 |
-| `ProjectSettings/` + `Assets/` | Unity · 原生 | 拉起 `Unity.exe -projectPath` + 窗口捕获（Play 需手动） |
-| `package.json` 有 `dev`/`start` | Web · dev server | 跑脚本并等端口 |
-| 根目录有 `index.html` | 静态 HTML | 内置 loopback 文件服务 |
+| `Assets/` + `ProjectSettings/` | Unity · 原生 | 拉起 `Unity.exe -projectPath` + 窗口捕获（Play 需手动） |
+| `package.json` 有 `dev` / `start` / `serve` / `preview` | Web · dev server | 跑脚本并等端口；端口从脚本参数或它执行的 `.mjs` 里读 |
+| 目录里有 `index.html` | 静态 HTML | `/static/<root>/` 目录服务 |
 
 **永远不问"你用什么引擎"**：检测不到才退回「手动 URL」。
 
@@ -114,6 +117,8 @@ Host 插件（零依赖）
 ├── 控制 API  http://127.0.0.1:7317/api/*
 │     ├── /hello  /state  /detect  /run  /stop  /clean  /log
 │     ├── /window/list  /window/attach  /window/stop
+│     ├── /roots   活着的会话目录（面板 📁 切换用）
+│     ├── /static  静态目录服务（相对路径不丢）
 │     ├── /frame   最近一帧 JPEG（轮询用）
 │     ├── /stream  multipart/x-mixed-replace（<img> 直接用）
 │     └── /file  静态单页服务（realpath 包含性校验）
@@ -147,6 +152,8 @@ Client 与 Host 之间**不依赖任何 Harness 内部 API**：面板探测 7317
 ## 已知限制
 
 - 端口探测只覆盖 16 个端口，全被占用时面板会提示"宿主未响应"。
+- 同时开着多个会话时，面板默认借**最近创建**的那个会话目录；轮到别的项目请点 `📁` 切换（页面 URL 带会话 id 时会自动匹配）。
+- 只扫一层子目录：`a/b/cocos` 这种两层嵌套要手动填路径。
 - 抓帧是 CPU 读回 + JPEG 编码：4K 窗口会掉到 5–8 fps；`captureWidth` 缩到 1280 能明显提速。
 - 独占全屏 / 最小化窗口抓不到，面板给的是提示而不是黑屏。
 - 编辑器路径（Cocos / 微信 cli / Godot / Unity）默认按常见位置猜，装到非默认盘要显式配置。

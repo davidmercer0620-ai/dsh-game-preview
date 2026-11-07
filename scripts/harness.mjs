@@ -106,6 +106,52 @@ console.log('cocos run', cocosRun.ok, '|', String(cocosRun.error).slice(0, 80))
 if (cocosRun.ok !== false) throw new Error('cocos timeout must report ok:false')
 if (!/浏览器预览/.test(String(cocosRun.error))) throw new Error('cocos timeout must tell the user what to do next')
 
+/* ------------------------------- nested projects and serve-style scripts */
+
+console.log('\n--- nested detection ---')
+
+const nested = join(tmpdir(), 'dgp-nested')
+rmSync(nested, { recursive: true, force: true })
+mkdirSync(join(nested, 'cocos', 'settings'), { recursive: true })
+mkdirSync(join(nested, 'cocos', 'assets'), { recursive: true })
+mkdirSync(join(nested, 'tools'), { recursive: true })
+writeFileSync(join(nested, 'package.json'), JSON.stringify({ scripts: { serve: 'node tools/serve.mjs' } }))
+writeFileSync(join(nested, 'tools', 'serve.mjs'), 'const PORT = 8123\nconsole.log(PORT)\n')
+writeFileSync(join(nested, 'cocos', 'index.html'), '<!doctype html><title>nested</title><canvas></canvas><script src="main.js"></script>')
+writeFileSync(join(nested, 'cocos', 'main.js'), "console.log('nested-js')")
+
+const nestedDetect = await detectOf(nested)
+console.log('nested configs', nestedDetect.configs.map((c) => `${c.id}@${c.dir ?? '.'}`).join(', '))
+const nestedIds = nestedDetect.configs.map((c) => c.id)
+if (!nestedIds.includes('node-dev')) throw new Error('a package.json with only a serve script must still be detected')
+if (!nestedIds.includes('cocos-web@cocos')) throw new Error('a nested Cocos project must be detected')
+const serveCfg = nestedDetect.configs.find((c) => c.id === 'node-dev')
+if (serveCfg.url !== 'http://localhost:8123') throw new Error('the serve port should be read from the script file, got ' + serveCfg.url)
+
+const nestedStatic = await (await fetch(base + '/api/run', {
+  method: 'POST', headers: JSON_HEADERS,
+  body: JSON.stringify({ configId: 'static@cocos', root: nested }),
+})).json()
+console.log('nested static', nestedStatic.ok, nestedStatic.active?.url?.slice(0, 70))
+if (!nestedStatic.ok) throw new Error('a nested static config must run: ' + nestedStatic.error)
+if (!String(nestedStatic.active.url).includes('/static/')) throw new Error('a static game must be served from /static/ so relative assets resolve')
+const nestedPage = await fetch(nestedStatic.active.url)
+const nestedHtml = await nestedPage.text()
+if (!nestedHtml.includes('canvas')) throw new Error('nested static page did not serve the subdirectory file')
+
+// a sibling <script src="main.js"> must resolve next to index.html, not at the server root
+const assetUrl = new URL('main.js', nestedStatic.active.url)
+const asset = await fetch(assetUrl)
+const assetBody = await asset.text()
+console.log('nested asset', asset.status, assetUrl.pathname.slice(0, 40), '|', assetBody.slice(0, 24))
+if (asset.status !== 200 || !assetBody.includes('nested-js')) throw new Error('relative assets broke: ' + asset.status)
+
+// the static route only serves directories the plugin registered
+const forged = Buffer.from('C:\\Windows', 'utf8').toString('base64url')
+const blocked = await fetch(base + '/static/' + forged + '/win.ini')
+console.log('unregistered root', blocked.status)
+if (blocked.status !== 403) throw new Error('static route must refuse unregistered roots')
+
 /* ------------------------------------- real dev server: start, wait, stop */
 
 const devApp = join(tmpdir(), 'dgp-dev')
@@ -299,7 +345,7 @@ console.log('detect missing dir', badRoot.status)
 if (badRoot.status !== 404) throw new Error('detect on a missing directory must be 404')
 
 for (const d of effects) { try { d?.() } catch {} }
-for (const dir of [root, wechat, cocos, devApp, godotDir]) {
+for (const dir of [root, wechat, cocos, devApp, godotDir, nested]) {
   try { rmSync(dir, { recursive: true, force: true }) } catch {}
 }
 process.exit(0)

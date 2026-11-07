@@ -23,6 +23,20 @@ window.__ModuleLoader__.load({
 
     let endpoint = null
 
+    // The panel has no Session of its own; if the page URL carries one, hand it
+    // to the Host so it can resolve this session's working directory.
+    const SESSION_ID = (() => {
+      try {
+        const url = String(window.location?.href ?? '')
+        const hit =
+          /\/s\/([A-Za-z0-9_-]{6,})/.exec(url) ??
+          /(?:session|sessionId)=([A-Za-z0-9_-]{6,})/.exec(url)
+        return hit ? hit[1] : ''
+      } catch {
+        return ''
+      }
+    })()
+
     async function probe() {
       if (endpoint) return endpoint
       for (const port of PORTS) {
@@ -114,6 +128,7 @@ window.__ModuleLoader__.load({
       const [manualRoot, setManualRoot] = useState('')
       const [manualUrl, setManualUrl] = useState('')
       const [windows, setWindows] = useState(null)
+      const [roots, setRoots] = useState(null)
       const [winBusy, setWinBusy] = useState(false)
       const alive = useRef(true)
 
@@ -126,7 +141,7 @@ window.__ModuleLoader__.load({
 
       const refresh = useCallback(async () => {
         try {
-          const next = await call('/api/state')
+          const next = await call('/api/state' + (SESSION_ID ? `?session=${encodeURIComponent(SESSION_ID)}` : ''))
           if (alive.current) {
             setSnap(next)
             setError(null)
@@ -188,6 +203,34 @@ window.__ModuleLoader__.load({
         }
       }, [manualRoot])
 
+      const openRoots = useCallback(async () => {
+        setWinBusy(true)
+        try {
+          const next = await call('/api/roots')
+          setRoots(next.roots ?? [])
+          if (!(next.roots ?? []).length) setError('没有开着的会话目录可切：直接在下面填路径')
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        } finally {
+          setWinBusy(false)
+        }
+      }, [])
+
+      const pickRoot = useCallback(async (dir) => {
+        if (!dir) return
+        setRoots(null)
+        setBusy(true)
+        try {
+          const next = await call('/api/detect', { method: 'POST', body: JSON.stringify({ root: dir }) })
+          setSnap(next)
+          setError(null)
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        } finally {
+          setBusy(false)
+        }
+      }, [])
+
       const openPicker = useCallback(async () => {
         setWinBusy(true)
         try {
@@ -240,7 +283,9 @@ window.__ModuleLoader__.load({
             h('div', { style: { fontSize: 13, fontWeight: 600 } }, '还没有运行中的预览'),
             h('div', { className: 'gp-note' },
               snap?.root
-                ? '点上方配置启动；或者在对话里让 agent 调用 game_preview_run。'
+                ? (configs.length && configs.every((c) => c.kind === 'manual')
+                    ? `扫描了 ${snap.root}，没找到可运行的配置：填一个已在跑的 URL，或让 agent 帮你起服务。`
+                    : '点上方配置启动；或者在对话里让 agent 调用 game_preview_run。')
                 : '填入项目目录后检测，或者在对话里让 agent 跑一次游戏预览。'),
             h('input', {
               className: 'gp-input',
@@ -293,6 +338,27 @@ window.__ModuleLoader__.load({
             ? '窗口最小化时无法捕获，请还原游戏窗口。'
             : null
 
+      const rootPicker = roots
+        ? h('div', { className: 'gp-picker' },
+            h('select', {
+              className: 'gp-select',
+              defaultValue: '',
+              disabled: busy,
+              onChange: (e) => void pickRoot(e.target.value),
+            },
+              h('option', { value: '' }, `选择会话目录（${roots.length}）`),
+              roots.map((r) => h('option', { key: r.dir, value: r.dir }, r.dir))),
+            h('input', {
+              className: 'gp-input',
+              style: { maxWidth: 220 },
+              placeholder: '或者填一个新路径',
+              value: manualRoot,
+              onChange: (e) => setManualRoot(e.target.value),
+              onKeyDown: (e) => { if (e.key === 'Enter') void pickRoot(manualRoot.trim()) },
+            }),
+            h('button', { className: 'gp-btn', onClick: () => setRoots(null) }, '取消'))
+        : null
+
       const picker = windows
         ? h('div', { className: 'gp-picker' },
             h('select', {
@@ -314,9 +380,18 @@ window.__ModuleLoader__.load({
           canCapture
             ? h('button', { className: 'gp-chip', disabled: winBusy, title: '把任意已运行的窗口接进舞台', onClick: () => void openPicker() }, '选择窗口')
             : null,
+          snap?.root
+            ? h('button', {
+                className: 'gp-chip',
+                disabled: winBusy,
+                title: snap.root,
+                onClick: () => void openRoots(),
+              }, `📁 ${String(snap.root).split(/[\\/]/).filter(Boolean).pop() ?? snap.root} ▾`)
+            : null,
           h('span', { className: 'gp-spacer' }),
           h('span', { className: 'gp-dirty' },
             dirty.length ? [h('span', { key: 'd', className: 'gp-dot' }), `${dirty.length} 处改动待运行`] : '已同步')),
+        rootPicker,
         picker,
         error ? h('div', { className: 'gp-err' }, error) : null,
         blackHint ? h('div', { className: 'gp-hint' }, blackHint) : null,

@@ -239,3 +239,43 @@ node scripts/client-harness.mjs  → exit 0（web 舞台 / 窗口舞台 / 断流
 2. **真实引擎回归**：装个 Godot 4（免安装 zip 即可）跑 `--path`，Unity 拿个小工程试 `-projectPath` + Play。
 3. **WGC 后端**：只换 `window-capture.ps1` 内部，协议不动；判定阈值已在文档里写好。
 4. 发布：`git remote add origin <空仓库>` + `git push -u origin main`。
+
+---
+
+## 11. 2026-11-07 修复：面板"没检测到项目"（v0.2.1）
+
+### 现象
+
+在 `F:\炉石传说` 和 `F:\降维联盟` 两个项目里开面板，都显示"未检测到项目"。
+
+### 根因（两个叠在一起）
+
+1. **面板根本不知道工作区**。Host 只在 `game_preview_*` 工具被调用时通过 `ctx.workingDirectory.get(agent)` 学到目录；用户直接点开会话标题栏的 ▶ 时 `state.lastRoot` 是 null，`/api/state` 返回空 configs，面板就渲染 "未检测到项目"——跟项目结构无关。
+2. **检测只看根目录，且只认 dev/start**。`F:\炉石传说` 根是微信小游戏壳，真工程在 `cocos/`、`cozy-tower-idle-main/`；`F:\降维联盟` 的脚本叫 `serve`，旧代码只认 `dev`/`start`。
+
+### 干了什么
+
+| 改动 | 位置 |
+|---|---|
+| 自动发现工作区：`agents.roots()` → `workingDirectory.get(session)`，按会话创建时间取最近的；页面 URL 带会话 id 时优先用它 | `index.js` `discoverRoot()` |
+| `/api/roots` 列出活着的会话目录；面板顶栏 `📁 <目录> ▾` 可切换，多会话不再靠猜 | `index.js` / `client.js` |
+| 检测扩到**根 + 一层子目录**，每个配置带 `dir`，启动/静态服务都在子目录里跑 | `index.js` `configsAt()` |
+| 脚本名扩到 `dev`/`start`/`serve`/`preview`，端口从 `--port`、`PORT=` 或它执行的 `.mjs` 里读 | `index.js` `pickScript()` / `guessDevUrl()` |
+| 静态页从 `/file?path=` 换成 `/static/<base64url root>/<rel>`，**相对路径不再丢**（`main.js`/贴图/wasm 都能加载） | `index.js` |
+| 静态路由只服务注册过的目录（403 挡掉任意盘符读取） | `index.js` |
+| 版本号改为从 `package.json` 读（之前 `hello` 永远显示 0.2.0） | `index.js` |
+
+### 验证
+
+```
+F:\炉石传说  → wechat（根） + cocos-web@cocos + cocos-web@cocos-creator-3.8-template-master + cocos-web@cozy-tower-idle-main
+F:\降维联盟  → node-dev（npm run serve） + static@web
+无 root 调 /api/state → root=F:\降维联盟（自动发现），configs 立即出现
+/static/…/web/index.html 200 872B，相对路径 main.js 200 5383B、render.js 200 7214B
+harness：嵌套检测、serve 端口解析、相对资源、未注册 root 403 全绿
+```
+
+### 仍要注意
+
+- `F:\降维联盟` 的 `npm run serve` 指向 `tools/serve.mjs`，**这个文件现在不存在**（web/ 是直接静态页），所以真正的开发回路目前是 `static@web`；等 serve.mjs 写出来，端口会被自动读出来。
+- 微信小游戏仍然只负责调起开发者工具，本机没装 cli。

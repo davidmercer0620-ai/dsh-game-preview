@@ -1,6 +1,6 @@
 {
   "name": "dsh-game-preview",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "private": true,
   "description": "Game preview panel for DeepSeek Harness: run configurations, native window capture, and a live stage inside the right sidebar.",
   "type": "module",
@@ -23,13 +23,24 @@
     "LICENSE"
   ],
   "dsh": {
-    "bundle": { "patch": "./cordis.patch.yml" },
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    },
     "client": {
       "platform": "web",
       "immediately": true,
-      "inject": ["@deepseek-ai/dsh-client-ui-conversation", "@deepseek-ai/dsh-client-ui-sidebar-right"]
+      "inject": [
+        "@deepseek-ai/dsh-client-ui-conversation",
+        "@deepseek-ai/dsh-client-ui-sidebar-right"
+      ]
     }
   },
-  "keywords": ["deepseek-harness", "dsh", "dsh-plugin", "gamedev", "preview"],
+  "keywords": [
+    "deepseek-harness",
+    "dsh",
+    "dsh-plugin",
+    "gamedev",
+    "preview"
+  ],
   "license": "MIT"
 }

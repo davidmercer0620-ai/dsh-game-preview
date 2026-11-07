@@ -146,6 +146,7 @@ if (!dirtyText[0].includes('1 处改动待运行')) throw new Error(`dirty badge
 /* ---------------------------------------- render the window-capture stage (v0.2) */
 
 const windowSnap = {
+  root: 'F:\\Games\\godot-demo',
   configs: [{ id: 'godot-native', kind: 'native', title: 'Godot · 原生' }],
   active: {
     id: 'godot-native', kind: 'window', windowTitle: 'My Game',
@@ -155,8 +156,8 @@ const windowSnap = {
   running: true,
   capture: { supported: true, running: true, fps: 24.5, width: 1280, height: 720, stale: false, error: null, errorCode: null, black: 0 },
 }
-// useState order in Panel: snap, error, busy, reloadKey, width, manualRoot, manualUrl, windows, winBusy
-react.__states = [windowSnap, null, false, 0, 0, '', '', null, false]
+// useState order in Panel: snap, error, busy, reloadKey, width, manualRoot, manualUrl, windows, roots, winBusy
+react.__states = [windowSnap, null, false, 0, 0, '', '', null, null, false]
 const windowTree = body.component({})
 const shots = []
 const badges = []
@@ -172,14 +173,23 @@ if (!badges.some((b) => b.includes('fps'))) throw new Error(`window stage render
 
 // a stale capture must show the disconnect badge rather than a silent freeze
 const staleSnap = { ...windowSnap, capture: { ...windowSnap.capture, fps: 0, stale: true } }
-react.__states = [staleSnap, null, false, 0, 0, '', '', null, false]
+react.__states = [staleSnap, null, false, 0, 0, '', '', null, null, false]
 const staleTree = body.component({})
 const staleBadges = []
 walk(staleTree, (n) => { if (typeof n.children?.[0] === 'string' && n.children[0] === '已断流') staleBadges.push(n.children[0]) })
 if (!staleBadges.length) throw new Error('a stale capture must show the 已断流 badge')
 
+// the workspace chip shows the directory the Host resolved, so a fresh session
+// can tell it auto-detected the right project instead of guessing
+const dirChips = []
+walk(windowTree, (n) => {
+  const label = typeof n.children?.[0] === 'string' ? n.children[0] : ''
+  if (label.startsWith('📁')) dirChips.push(label)
+})
+if (!dirChips.length) throw new Error('panel did not render a workspace directory chip')
+
 // the window picker renders one option per capturable window
-react.__states = [windowSnap, null, false, 0, 0, '', '', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], false]
+react.__states = [windowSnap, null, false, 0, 0, '', '', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
 const pickerTree = body.component({})
 let pickerOptions = 0
 walk(pickerTree, (n) => { if (n.type === 'select') pickerOptions = (n.children ?? []).length })
