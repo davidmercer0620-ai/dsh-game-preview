@@ -4,9 +4,13 @@
  * without restarting the Harness process.
  */
 import { apply } from '../index.js'
+import { execFile, spawn } from 'node:child_process'
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+const JSON_HEADERS = { 'content-type': 'application/json' }
 
 const root = join(tmpdir(), 'dgp-harness')
 rmSync(root, { recursive: true, force: true })
@@ -23,7 +27,7 @@ const ctx = {
   workingDirectory: { get: () => root },
 }
 
-apply(ctx, { port: 7401, waitForMs: 1500 })
+apply(ctx, { port: 7401, waitForMs: 1500, godotExe: 'C:\\Windows\\System32\\notepad.exe' })
 
 await new Promise((r) => setTimeout(r, 600))
 const base = 'http://127.0.0.1:7401'
@@ -149,8 +153,153 @@ try {
   await stopDev()
 }
 
+/* ------------------------------------------------ v0.2 native window capture */
+
+console.log('\n--- window capture (v0.2) ---')
+
+const notepad = spawn('notepad.exe', [], { windowsHide: false, detached: false })
+try {
+  await sleep(1400)
+  const listed = await (await fetch(base + '/api/window/list')).json()
+  console.log('windows', listed.ok, listed.windows?.length ?? 0)
+  if (!listed.ok) throw new Error('window list failed: ' + listed.error)
+  const target = (listed.windows ?? []).find((w) => w.pid === notepad.pid)
+  if (!target) throw new Error('could not find the notepad window for pid ' + notepad.pid)
+
+  const attached = await (await fetch(base + '/api/window/attach', {
+    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ hwnd: target.hwnd }),
+  })).json()
+  console.log('attach', attached.ok, attached.active?.kind, 'capture running:', attached.capture?.running)
+  if (!attached.ok) throw new Error('attach failed: ' + attached.error)
+  if (attached.active?.kind !== 'window') throw new Error('active preview should be kind=window')
+  if (!/\/stream\?hwnd=/.test(String(attached.active.url))) throw new Error('window preview must point at /stream')
+
+  await sleep(1600)
+  const frameRes = await fetch(base + '/api/frame')
+  const jpeg = Buffer.from(await frameRes.arrayBuffer())
+  console.log('frame', frameRes.status, jpeg.length + 'B', 'header', jpeg.subarray(0, 3).toString('hex'))
+  if (jpeg[0] !== 0xff || jpeg[1] !== 0xd8) throw new Error('frame is not a JPEG')
+
+  const live = await (await fetch(base + '/api/state')).json()
+  console.log('capture state', JSON.stringify({ fps: live.capture.fps, w: live.capture.width, h: live.capture.height, frames: live.capture.frames }))
+  if (!(live.capture.fps > 0)) throw new Error('no frame rate measured')
+  if (!live.capture.width || !live.capture.height) throw new Error('capture has no frame size')
+
+  // multipart stream: first boundary and one JPEG part must arrive
+  const streamRes = await fetch(base + '/stream')
+  const reader = streamRes.body.getReader()
+  const { value } = await reader.read()
+  const head = Buffer.from(value ?? []).toString('latin1')
+  reader.cancel().catch(() => {})
+  console.log('stream', streamRes.status, /boundary=frame/.test(streamRes.headers.get('content-type') ?? ''), head.slice(0, 40))
+  if (!/multipart\/x-mixed-replace/.test(streamRes.headers.get('content-type') ?? '')) throw new Error('stream is not multipart')
+  if (!head.includes('Content-Type: image/jpeg')) throw new Error('stream did not start with a JPEG part')
+
+  // closing the captured window must surface as window-closed, not a frozen picture
+  await new Promise((resolve) => execFile('taskkill', ['/pid', String(notepad.pid), '/T', '/F'], () => resolve()))
+  let closed = null
+  for (let i = 0; i < 20 && !closed; i += 1) {
+    await sleep(300)
+    const state = await (await fetch(base + '/api/state')).json()
+    if (state.capture.errorCode === 'window-closed') closed = state.capture
+  }
+  console.log('window closed ->', closed?.errorCode ?? 'not detected', '|', closed?.error ?? '')
+  if (!closed) throw new Error('closing the window must be reported as window-closed')
+
+  const stoppedCapture = await (await fetch(base + '/api/stop', { method: 'POST', headers: JSON_HEADERS, body: '{}' })).json()
+  console.log('capture stopped', stoppedCapture.capture?.running === false)
+  if (stoppedCapture.capture?.running !== false) throw new Error('stop must stop the capture')
+
+  // a window that does not exist must fail with an actionable message
+  const missing = await (await fetch(base + '/api/window/attach', {
+    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ hwnd: 1 }),
+  })).json()
+  console.log('missing window ->', missing.ok, String(missing.error).slice(0, 60))
+  if (missing.ok !== false) throw new Error('attaching to a dead hwnd must fail')
+} finally {
+  try { notepad.kill() } catch {}
+}
+
+/* --------------------------- native launch path: engine -> window -> capture */
+
+console.log('\n--- native launch path (godot config with a stand-in exe) ---')
+
+const godotDir = join(tmpdir(), 'dgp-godot')
+rmSync(godotDir, { recursive: true, force: true })
+mkdirSync(godotDir, { recursive: true })
+writeFileSync(join(godotDir, 'project.godot'), '[application]\nconfig/name="Stand-in"\n')
+
+const godotDetect = await detectOf(godotDir)
+const godotCfg = godotDetect.configs.find((c) => c.id === 'godot-native')
+console.log('godot config', godotCfg?.id, godotCfg?.kind, '|', godotCfg?.detail)
+if (!godotCfg) throw new Error('project.godot must produce a godot-native config')
+
+const nativeRun = await fetch(base + '/api/run', {
+  method: 'POST', headers: JSON_HEADERS,
+  body: JSON.stringify({ configId: 'godot-native', root: godotDir }),
+})
+const nativeBody = await nativeRun.json()
+console.log('native run', nativeBody.ok, nativeBody.active?.kind, '| hwnd', nativeBody.active?.hwnd, '| waited', nativeBody.waitedMs, 'ms')
+if (!nativeBody.ok) throw new Error('native launch failed: ' + nativeBody.error)
+if (nativeBody.active?.kind !== 'window') throw new Error('native launch must activate a window preview')
+if (!nativeBody.capture?.running) throw new Error('native launch must start the capture')
+
+await sleep(1200)
+const nativeState = await (await fetch(base + '/api/state')).json()
+console.log('native capture', JSON.stringify({ fps: nativeState.capture.fps, frames: nativeState.capture.frames }))
+if (!(nativeState.capture.frames > 0)) throw new Error('native capture produced no frames')
+
+const killed = await (await fetch(base + '/api/stop', { method: 'POST', headers: JSON_HEADERS, body: '{}' })).json()
+console.log('native stop', killed.ok, 'capture:', killed.capture?.running)
+if (killed.capture?.running !== false) throw new Error('stop must stop the native capture')
+
+/* -------------------- missing engine binary must produce an actionable error */
+
+const tools2 = new Map()
+const effects2 = []
+const ctx2 = {
+  logger: { info() {}, warn: () => {} },
+  get: () => undefined,
+  effect: (fn) => { const d = fn(); effects2.push(d); return d },
+  tools: { register: (def) => { tools2.set(def.name, def); return () => tools2.delete(def.name) } },
+  workingDirectory: { get: () => godotDir },
+}
+apply(ctx2, { port: 7402, waitForMs: 800, godotExe: 'C:/no/such/godot.exe' })
+await sleep(500)
+await fetch('http://127.0.0.1:7402/api/detect', {
+  method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ root: godotDir }),
+})
+const noEngine = await (await fetch('http://127.0.0.1:7402/api/run', {
+  method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ configId: 'godot-native' }),
+})).json()
+console.log('missing engine ->', noEngine.ok, String(noEngine.error).slice(0, 50))
+if (noEngine.ok !== false) throw new Error('a missing engine binary must fail fast')
+if (!/godotExe/.test(String(noEngine.error))) throw new Error('the missing-engine error must name the config key')
+for (const d of effects2) { try { d?.() } catch {} }
+
+/* --------------------------------------------------------- security + api */
+
+console.log('\n--- control api guards ---')
+
+const foreign = await fetch(base + '/api/state', { headers: { origin: 'https://evil.example' } })
+console.log('foreign origin', foreign.status, foreign.headers.get('access-control-allow-origin'))
+if (foreign.status !== 403) throw new Error('a foreign origin must be rejected with 403')
+
+const localOrigin = await fetch(base + '/api/hello', { headers: { origin: 'http://127.0.0.1:56543' } })
+console.log('loopback origin', localOrigin.status, localOrigin.headers.get('access-control-allow-origin'))
+if (localOrigin.status !== 200) throw new Error('the DSH page origin must be allowed')
+
+const noRoot = await fetch(base + '/api/detect', { method: 'POST', headers: JSON_HEADERS, body: '{}' })
+const noRootBody = await noRoot.json()
+console.log('detect without root', noRoot.status, Array.isArray(noRootBody.configs) ? 'fell back to the last root' : '')
+if (noRoot.status !== 200 && noRoot.status !== 400) throw new Error('detect without a root must not 500')
+
+const badRoot = await fetch(base + '/api/detect', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ root: 'C:/no/such/project' }) })
+console.log('detect missing dir', badRoot.status)
+if (badRoot.status !== 404) throw new Error('detect on a missing directory must be 404')
+
 for (const d of effects) { try { d?.() } catch {} }
-for (const dir of [root, wechat, cocos, devApp]) {
+for (const dir of [root, wechat, cocos, devApp, godotDir]) {
   try { rmSync(dir, { recursive: true, force: true }) } catch {}
 }
 process.exit(0)

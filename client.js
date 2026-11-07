@@ -4,6 +4,9 @@
  * A right-sidebar tab: run configurations on top, the game stage in the middle,
  * and a playtest bar at the bottom. Talks to the Host half over its loopback
  * control API (discovered by probing a small port range).
+ *
+ * The stage renders either an <iframe> (web preview) or an <img> fed by the
+ * Host's multipart /stream (native window capture, v0.2).
  */
 window.__ModuleLoader__.load({
   id: 'dsh-game-preview',
@@ -16,6 +19,7 @@ window.__ModuleLoader__.load({
     const ID = 'dsh-game-preview'
     const PORTS = Array.from({ length: 16 }, (_, i) => 7317 + i)
     const WIDTHS = ['100%', '768px', '375px']
+    const WIDTH_KEY = 'dsh-game-preview.width'
 
     let endpoint = null
 
@@ -60,9 +64,13 @@ window.__ModuleLoader__.load({
         border-radius:999px;padding:3px 10px;font-size:11px;cursor:pointer;white-space:nowrap}
       .gp-chip[data-on="1"]{background:color-mix(in srgb, currentColor 12%, transparent);border-color:color-mix(in srgb, currentColor 30%, transparent)}
       .gp-chip[data-dim="1"]{opacity:.45;cursor:not-allowed}
-      .gp-stage{flex:1;min-height:0;display:flex;align-items:stretch;justify-content:center;background:color-mix(in srgb, currentColor 4%, transparent);overflow:hidden}
+      .gp-stage{position:relative;flex:1;min-height:0;display:flex;align-items:stretch;justify-content:center;background:color-mix(in srgb, currentColor 4%, transparent);overflow:hidden}
       .gp-frame{width:100%;height:100%;border:0;background:#000;display:block}
       .gp-frame[data-narrow="1"]{margin:8px 0;border-radius:10px;box-shadow:0 0 0 1px color-mix(in srgb, currentColor 18%, transparent);height:calc(100% - 16px)}
+      .gp-shot{width:100%;height:100%;object-fit:contain;background:#000;display:block;image-rendering:auto}
+      .gp-live{position:absolute;left:8px;top:8px;display:flex;gap:6px;align-items:center;pointer-events:none;font-size:10px}
+      .gp-live span{background:rgba(12,12,14,.72);color:#eee;border-radius:999px;padding:2px 8px;backdrop-filter:blur(4px)}
+      .gp-live span[data-warn="1"]{background:rgba(160,60,30,.85)}
       .gp-bar{display:flex;align-items:center;gap:4px;padding:6px 8px;border-top:1px solid color-mix(in srgb, currentColor 12%, transparent);flex-wrap:wrap}
       .gp-btn{border:1px solid color-mix(in srgb, currentColor 16%, transparent);background:transparent;color:inherit;
         border-radius:7px;padding:3px 9px;font-size:11px;cursor:pointer;line-height:1.5}
@@ -75,8 +83,12 @@ window.__ModuleLoader__.load({
       .gp-empty{flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:24px;text-align:center;opacity:.85}
       .gp-input{width:100%;max-width:420px;padding:6px 9px;border-radius:8px;font-size:12px;color:inherit;background:transparent;
         border:1px solid color-mix(in srgb, currentColor 20%, transparent)}
+      .gp-select{max-width:100%;padding:5px 8px;border-radius:8px;font-size:11px;color:inherit;
+        background:color-mix(in srgb, currentColor 6%, transparent);border:1px solid color-mix(in srgb, currentColor 20%, transparent)}
       .gp-note{font-size:11px;opacity:.6;max-width:420px;line-height:1.6}
       .gp-err{color:#d9534f;font-size:11px;padding:6px 10px}
+      .gp-hint{color:#c8892f;font-size:11px;padding:6px 10px}
+      .gp-picker{display:flex;gap:6px;padding:6px 10px;align-items:center;border-bottom:1px solid color-mix(in srgb, currentColor 12%, transparent)}
     `
 
     function useStyles() {
@@ -91,10 +103,26 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState(null)
       const [busy, setBusy] = useState(false)
       const [reloadKey, setReloadKey] = useState(0)
-      const [width, setWidth] = useState(0)
+      const [width, setWidthState] = useState(() => {
+        try {
+          const saved = Number(window.localStorage.getItem(WIDTH_KEY))
+          return Number.isFinite(saved) && saved >= 0 && saved < WIDTHS.length ? saved : 0
+        } catch {
+          return 0
+        }
+      })
       const [manualRoot, setManualRoot] = useState('')
       const [manualUrl, setManualUrl] = useState('')
+      const [windows, setWindows] = useState(null)
+      const [winBusy, setWinBusy] = useState(false)
       const alive = useRef(true)
+
+      const setWidth = useCallback((next) => {
+        setWidthState(next)
+        try {
+          window.localStorage.setItem(WIDTH_KEY, String(next))
+        } catch {}
+      }, [])
 
       const refresh = useCallback(async () => {
         try {
@@ -160,19 +188,49 @@ window.__ModuleLoader__.load({
         }
       }, [manualRoot])
 
+      const openPicker = useCallback(async () => {
+        setWinBusy(true)
+        try {
+          const next = await call('/api/window/list')
+          setWindows(next.windows ?? [])
+          if (!(next.windows ?? []).length) setError('没有可捕获的窗口')
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        } finally {
+          setWinBusy(false)
+        }
+      }, [])
+
+      const attach = useCallback(async (hwnd) => {
+        setWinBusy(true)
+        try {
+          const next = await call('/api/window/attach', { method: 'POST', body: JSON.stringify({ hwnd }) })
+          setSnap(next)
+          setWindows(null)
+          setReloadKey((n) => n + 1)
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        } finally {
+          setWinBusy(false)
+        }
+      }, [])
+
       const configs = snap?.configs ?? []
       const active = snap?.active ?? null
       const dirty = snap?.dirty ?? []
+      const capture = snap?.capture ?? null
+      const isWindow = active?.kind === 'window'
       const url = active?.url ?? null
+      const canCapture = capture?.supported !== false
 
       const chips = configs.map((cfg) => {
-        const dim = cfg.kind === 'native'
+        const dim = cfg.kind === 'native' && !canCapture
         return h('button', {
           key: cfg.id,
           className: 'gp-chip',
           'data-on': active?.id === cfg.id ? '1' : '0',
           'data-dim': dim ? '1' : '0',
-          title: dim ? `${cfg.detail ?? ''}` : (cfg.url ?? cfg.detail ?? ''),
+          title: dim ? '窗口捕获只支持 Windows' : (cfg.url ?? cfg.detail ?? ''),
           onClick: () => { if (!dim) void run(cfg.id) },
         }, cfg.title)
       })
@@ -194,17 +252,29 @@ window.__ModuleLoader__.load({
             h('button', { className: 'gp-btn', disabled: busy || !manualRoot.trim(), onClick: () => void detect() }, '检测这个目录'))
         : null
 
-      return h('div', { className: 'gp-root' },
-        useStyles(),
-        h('div', { className: 'gp-chips' },
-          chips.length ? chips : h('span', { className: 'gp-chip' }, '未检测到项目'),
-          h('span', { className: 'gp-spacer' }),
-          h('span', { className: 'gp-dirty' },
-            dirty.length ? [h('span', { key: 'd', className: 'gp-dot' }), `${dirty.length} 处改动待运行`] : '已同步')),
-        error ? h('div', { className: 'gp-err' }, error) : null,
-        h('div', { className: 'gp-stage' },
-          url
-            ? h('iframe', {
+      const liveBadges = []
+      if (isWindow) {
+        liveBadges.push(h('span', { key: 'fps', 'data-warn': capture?.fps && capture.fps < 5 ? '1' : '0' },
+          capture?.fps ? `${capture.fps} fps` : '连接中'))
+        if (capture?.stale || (capture?.errorCode && capture.errorCode !== 'minimized')) {
+          liveBadges.push(h('span', { key: 'stale', 'data-warn': '1' }, capture?.errorCode === 'window-closed' ? '窗口已关闭' : '已断流'))
+        }
+        if (capture?.width) liveBadges.push(h('span', { key: 'size' }, `${capture.width}×${capture.height}`))
+      }
+
+      const stage = url
+        ? isWindow
+          ? h('div', { className: 'gp-stage' },
+              h('img', {
+                key: `${url}#${reloadKey}`,
+                className: 'gp-shot',
+                src: url,
+                alt: active?.windowTitle ?? 'game window',
+                onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
+              }),
+              liveBadges.length ? h('div', { className: 'gp-live' }, liveBadges) : null)
+          : h('div', { className: 'gp-stage' },
+              h('iframe', {
                 key: `${url}#${reloadKey}#${width}`,
                 className: 'gp-frame',
                 src: url,
@@ -212,14 +282,51 @@ window.__ModuleLoader__.load({
                 style: width > 0 ? { width: WIDTHS[width], maxWidth: '100%' } : undefined,
                 title: 'game preview',
                 allow: 'autoplay; fullscreen; gamepad',
-              })
-            : empty),
+              }))
+        : empty
+
+      const blackHint = isWindow && capture?.errorCode === 'printwindow-failed'
+        ? '这个窗口抓不到画面（常见于独占全屏）：把游戏改成窗口/无边框模式再重试。'
+        : isWindow && capture?.black > 3
+          ? '连续全黑帧：可能是独占全屏，或游戏刚启动还没画第一帧。'
+          : isWindow && capture?.errorCode === 'minimized'
+            ? '窗口最小化时无法捕获，请还原游戏窗口。'
+            : null
+
+      const picker = windows
+        ? h('div', { className: 'gp-picker' },
+            h('select', {
+              className: 'gp-select',
+              defaultValue: '',
+              disabled: winBusy,
+              onChange: (e) => { if (e.target.value) void attach(e.target.value) },
+            },
+              h('option', { value: '' }, `选择窗口（${windows.length}）`),
+              windows.slice(0, 40).map((w) => h('option', { key: w.hwnd, value: String(w.hwnd) },
+                `${w.title.slice(0, 48)} — ${w.width}×${w.height}`))),
+            h('button', { className: 'gp-btn', onClick: () => setWindows(null) }, '取消'))
+        : null
+
+      return h('div', { className: 'gp-root' },
+        useStyles(),
+        h('div', { className: 'gp-chips' },
+          chips.length ? chips : h('span', { className: 'gp-chip' }, '未检测到项目'),
+          canCapture
+            ? h('button', { className: 'gp-chip', disabled: winBusy, title: '把任意已运行的窗口接进舞台', onClick: () => void openPicker() }, '选择窗口')
+            : null,
+          h('span', { className: 'gp-spacer' }),
+          h('span', { className: 'gp-dirty' },
+            dirty.length ? [h('span', { key: 'd', className: 'gp-dot' }), `${dirty.length} 处改动待运行`] : '已同步')),
+        picker,
+        error ? h('div', { className: 'gp-err' }, error) : null,
+        blackHint ? h('div', { className: 'gp-hint' }, blackHint) : null,
+        stage,
         h('div', { className: 'gp-bar' },
           h('button', { className: 'gp-btn', 'data-primary': '1', disabled: busy || !configs.length, onClick: () => void run(active?.id) }, '▶ 运行'),
           h('button', { className: 'gp-btn', disabled: !url, onClick: () => setReloadKey((n) => n + 1) }, '⟳ 重载'),
-          h('button', { className: 'gp-btn', disabled: busy || !snap?.running, onClick: () => void stop() }, '⏹ 停止'),
+          h('button', { className: 'gp-btn', disabled: busy || (!snap?.running && !capture?.running), onClick: () => void stop() }, '⏹ 停止'),
           h('span', { className: 'gp-spacer' }),
-          h('button', { className: 'gp-btn', disabled: !url, onClick: () => setWidth((w) => (w + 1) % WIDTHS.length) }, WIDTHS[width]),
+          h('button', { className: 'gp-btn', disabled: !url || isWindow, onClick: () => setWidth((w) => (w + 1) % WIDTHS.length) }, WIDTHS[width]),
           h('button', { className: 'gp-btn', disabled: !url, onClick: () => url && window.open(url, '_blank', 'noopener') }, '↗ 外部')),
       )
     }

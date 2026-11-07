@@ -8,18 +8,24 @@
 import { createServer } from 'node:http'
 import { spawn, execFile } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync, watch } from 'node:fs'
-import { join, relative, resolve, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
+import { fileURLToPath } from 'node:url'
+import { WindowCapture } from './host/window.js'
 
 export const inject = ['tools']
 
 const APP_ID = 'dsh-game-preview'
+const VERSION = '0.2.0'
 const BASE_PORT = 7317
 const PORT_TRIES = 16
+const HERE = dirname(fileURLToPath(import.meta.url))
 
 const IGNORE = [
   'node_modules', '.git', 'dist', 'build', 'temp', 'library', 'logs',
   '.dsh-game-preview', 'out', 'bin', 'obj', '.cache', '.vscode',
 ]
+
+const LOOPBACK_ORIGIN = /^https?:\/\/(127\.0\.0\.1|localhost|\[::1\])(:\d+)?$/i
 
 /* ------------------------------------------------------------------ helpers */
 
@@ -92,6 +98,69 @@ async function waitFor(url, timeoutMs, signal) {
   return false
 }
 
+/* ------------------------------------------------------- engine launching */
+
+function findOnPath(pattern) {
+  const dirs = String(process.env.PATH ?? '').split(';').filter(Boolean)
+  for (const dir of dirs) {
+    let names
+    try {
+      names = readdirSync(dir)
+    } catch {
+      continue
+    }
+    // newest-looking match wins so Godot_v4.x beats an old 3.x install
+    const hit = names
+      .filter((name) => pattern.test(name))
+      .sort()
+      .pop()
+    if (hit) return join(dir, hit)
+  }
+  return null
+}
+
+function findUnityEditor() {
+  const hub = 'C:/Program Files/Unity/Hub/Editor'
+  try {
+    const versions = readdirSync(hub).sort()
+    for (const version of versions.reverse()) {
+      const exe = join(hub, version, 'Editor', 'Unity.exe')
+      if (existsSync(exe)) return exe
+    }
+  } catch {}
+  const plain = 'C:/Program Files/Unity/Editor/Unity.exe'
+  return existsSync(plain) ? plain : null
+}
+
+/**
+ * Resolve how to launch a native engine project. Returns { exe, args } or { error }.
+ * Godot runs the main scene directly (the fast loop); Unity opens the editor
+ * because Play mode has no headless equivalent without an editor script.
+ */
+function nativeLaunch(cfg, config, root) {
+  if (cfg.engine === 'godot') {
+    const exe = config.godotExe || findOnPath(/^godot[^\\/]*\.exe$/i)
+    if (!exe || !existsSync(exe)) {
+      return {
+        error:
+          '没找到 Godot 可执行文件：安装到非默认位置时，在插件配置 godotExe 里填绝对路径（例如 D:\\Godot\\Godot_v4.3-stable_win64.exe）',
+      }
+    }
+    return { exe, args: ['--path', root] }
+  }
+  if (cfg.engine === 'unity') {
+    const exe = config.unityExe || findUnityEditor()
+    if (!exe || !existsSync(exe)) {
+      return {
+        error:
+          '没找到 Unity.exe：装到非默认盘时，在插件配置 unityExe 里填绝对路径（<版本>\\Editor\\Unity.exe）',
+      }
+    }
+    return { exe, args: ['-projectPath', root] }
+  }
+  return { error: `未知的原生引擎：${cfg.engine}` }
+}
+
 /* ------------------------------------------------------------- detection */
 
 function guessDevUrl(pkg) {
@@ -133,25 +202,29 @@ function detect(root) {
     })
   }
 
-  // Godot / Unity: detected, native window capture ships in v0.2
+  // Godot / Unity: native window capture (v0.2)
   if (has(root, 'project.godot')) {
     configs.push({
       id: 'godot-native',
       kind: 'native',
+      engine: 'godot',
       title: 'Godot · 原生',
-      detail: '窗口捕获 v0.2',
-      estimatedMs: 3000,
-      reload: 'hard',
+      detail: '运行主场景 + 窗口捕获',
+      windowMatch: 'Godot|游戏|Game',
+      estimatedMs: 6000,
+      reload: 'manual',
     })
   }
   if (has(root, 'ProjectSettings') && has(root, 'Assets')) {
     configs.push({
       id: 'unity-native',
       kind: 'native',
+      engine: 'unity',
       title: 'Unity · 原生',
-      detail: '窗口捕获 v0.2',
-      estimatedMs: 3000,
-      reload: 'hard',
+      detail: '打开编辑器 + 窗口捕获',
+      windowMatch: 'Unity',
+      estimatedMs: 8000,
+      reload: 'manual',
     })
   }
 
@@ -193,8 +266,12 @@ function detect(root) {
 export function apply(ctx, config = {}) {
   const log = (...args) => ctx.logger?.info?.('[game-preview]', ...args)
   const roots = new Map() // root -> { configs, dirty:Set, watcher }
-  const proc = { child: null, config: null, startedAt: 0, logTail: [] }
+  const proc = { child: null, config: null, startedAt: 0, logTail: [], exe: null }
   const state = { active: null, lastRoot: null, lastError: null }
+  const capture = new WindowCapture({
+    helperPath: join(HERE, 'host', 'window-capture.ps1'),
+    logger: log,
+  })
 
   /* -- workspace bookkeeping ------------------------------------------- */
 
@@ -232,16 +309,34 @@ export function apply(ctx, config = {}) {
   function snapshot(root) {
     const entry = root ? ensureRoot(root) : state.lastRoot ? ensureRoot(state.lastRoot) : null
     if (entry && !entry.configs) entry.configs = detect(entry.root)
+    const caps = capture.status()
     return {
       ok: true,
       app: APP_ID,
+      version: VERSION,
       root: entry?.root ?? null,
       configs: entry?.configs ?? [],
       dirty: entry ? [...entry.dirty] : [],
       active: state.active,
       running: Boolean(proc.child),
-      error: state.lastError,
+      error: state.lastError ?? caps.error ?? null,
       ports: servedPorts,
+      capture: {
+        supported: caps.supported,
+        running: caps.running,
+        hwnd: caps.hwnd,
+        width: caps.width,
+        height: caps.height,
+        fps: caps.fps,
+        frames: caps.frames,
+        bytes: caps.bytes,
+        drops: caps.drops,
+        black: caps.black,
+        stale: caps.stale,
+        lastFrameAt: caps.lastFrameAt,
+        error: caps.error,
+        errorCode: caps.errorCode,
+      },
     }
   }
 
@@ -251,6 +346,8 @@ export function apply(ctx, config = {}) {
     const child = proc.child
     proc.child = null
     proc.config = null
+    proc.exe = null
+    capture.stop()
     if (!child) return
     const pid = child.pid
     try {
@@ -263,11 +360,7 @@ export function apply(ctx, config = {}) {
     } catch {}
   }
 
-  function spawnCommand(cmd, cwd, label) {
-    const child = spawn(cmd, { cwd, shell: true, windowsHide: true, detached: false })
-    proc.child = child
-    proc.startedAt = Date.now()
-    proc.logTail = []
+  function collectOutput(child) {
     const push = (buf) => {
       const text = String(buf)
       for (const line of text.split(/\r?\n/)) {
@@ -281,10 +374,78 @@ export function apply(ctx, config = {}) {
     child.on('exit', (code) => {
       if (proc.child === child) {
         proc.child = null
-        if (code !== 0) state.lastError = `${label} 退出（code ${code}）`
+        if (code !== 0) state.lastError = `${proc.config?.title ?? 'dev server'} 退出（code ${code}）`
+        capture.stop()
       }
     })
+  }
+
+  function spawnCommand(cmd, cwd, label) {
+    const child = spawn(cmd, { cwd, shell: true, windowsHide: true, detached: false })
+    proc.child = child
+    proc.config = { title: label }
+    proc.startedAt = Date.now()
+    proc.logTail = []
+    collectOutput(child)
     return child
+  }
+
+  /** Spawn an engine executable without a shell so `child.pid` owns the game window. */
+  function spawnDirect(exe, args, cwd, label) {
+    const child = spawn(exe, args, { cwd, shell: false, windowsHide: false, detached: false })
+    proc.child = child
+    proc.config = { title: label }
+    proc.exe = exe
+    proc.startedAt = Date.now()
+    proc.logTail = []
+    child.on('error', (error) => {
+      state.lastError = `${label} 启动失败：${String(error?.message ?? error)}`
+      capture.stop()
+    })
+    collectOutput(child)
+    return child
+  }
+
+  /* -- window discovery ------------------------------------------------- */
+
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
+
+  async function waitForWindow({ pid, titlePattern, timeoutMs = 20000 }) {
+    const started = Date.now()
+    let lastError = null
+    while (Date.now() - started < timeoutMs) {
+      try {
+        const windows = await capture.list()
+        const byPid = pid ? windows.find((w) => w.pid === pid && w.width >= 200 && w.height >= 150) : null
+        if (byPid) return byPid
+        if (titlePattern) {
+          let re
+          try {
+            re = new RegExp(titlePattern, 'i')
+          } catch {
+            re = null
+          }
+          const byTitle = windows.find(
+            (w) => w.width >= 200 && w.height >= 150 && (re ? re.test(w.title) : w.title.includes(titlePattern)),
+          )
+          if (byTitle) return byTitle
+        }
+      } catch (error) {
+        lastError = error
+      }
+      if (!proc.child) break // the engine died before showing a window
+      await sleep(400)
+    }
+    if (lastError) log('window discovery failed:', String(lastError))
+    return null
+  }
+
+  function captureOptions() {
+    return {
+      fps: Number(config.captureFps ?? 20),
+      maxWidth: Number(config.captureWidth ?? 0),
+      quality: Number(config.captureQuality ?? 70),
+    }
   }
 
   function resolveConfig(root, configId) {
@@ -298,22 +459,36 @@ export function apply(ctx, config = {}) {
   const servedPorts = []
   let server = null
 
-  function corsHeaders(request) {
-    const origin = request.headers.origin
-    const allowed = new Set()
+  function allowedOrigins() {
+    const list = new Set()
     try {
       const ws = ctx.get('webServer')
       const self = ws?.getOrigin?.()
-      if (self) allowed.add(self)
+      if (self) list.add(self)
     } catch {}
-    allowed.add('http://127.0.0.1:53948')
-    const ok = origin && [...allowed].includes(origin)
+    for (const origin of config.allowedOrigins ?? []) {
+      if (typeof origin === 'string' && origin) list.add(origin)
+    }
+    return list
+  }
+
+  function originAllowed(origin) {
+    if (!origin) return true // same-origin / non-browser callers (curl, the agent)
+    if (allowedOrigins().has(origin)) return true
+    // the panel itself is served from the DSH web origin, which is always loopback
+    return LOOPBACK_ORIGIN.test(origin)
+  }
+
+  function corsHeaders(request) {
+    const origin = request.headers.origin
+    const allow = origin && originAllowed(origin) ? origin : 'null'
     return {
-      'access-control-allow-origin': ok ? origin : origin ?? '*',
+      'access-control-allow-origin': allow,
       'access-control-allow-headers': 'content-type, x-game-preview',
       'access-control-allow-methods': 'GET, POST, OPTIONS',
       'cache-control': 'no-store',
       'content-type': 'application/json; charset=utf-8',
+      vary: 'origin',
     }
   }
 
@@ -333,8 +508,58 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  function originOf() {
+    return `http://127.0.0.1:${servedPorts[0] ?? BASE_PORT}`
+  }
+
+  function streamFrames(req, res, headers) {
+    res.writeHead(200, {
+      'content-type': 'multipart/x-mixed-replace; boundary=frame',
+      'cache-control': 'no-store, no-transform',
+      'access-control-allow-origin': headers['access-control-allow-origin'],
+      vary: 'origin',
+    })
+    let closed = false
+    const writeFrame = (frame) => {
+      if (closed || res.writableEnded) return
+      try {
+        res.write(`--frame\r\nContent-Type: image/jpeg\r\nContent-Length: ${frame.jpeg.length}\r\n\r\n`)
+        res.write(frame.jpeg)
+        res.write('\r\n')
+      } catch {
+        closed = true
+      }
+    }
+    const last = capture.last()
+    if (last && Date.now() - last.at < 2000) writeFrame(last)
+    const unsubscribe = capture.onFrame(writeFrame)
+    // an idle stream still needs traffic, or the browser drops it after a few seconds
+    const keepalive = setInterval(() => {
+      if (closed || res.writableEnded) return
+      try {
+        res.write('--frame\r\nContent-Type: image/jpeg\r\nContent-Length: 0\r\n\r\n\r\n')
+      } catch {
+        closed = true
+      }
+    }, 5000)
+    keepalive.unref?.()
+    const done = () => {
+      closed = true
+      clearInterval(keepalive)
+      unsubscribe()
+    }
+    req.on('close', done)
+    req.on('error', done)
+    res.on('close', done)
+  }
+
   async function handle(req, res) {
     const headers = corsHeaders(req)
+    const origin = req.headers.origin
+    if (!originAllowed(origin)) {
+      send(res, headers, { ok: false, error: 'origin not allowed' }, 403)
+      return
+    }
     if (req.method === 'OPTIONS') {
       res.writeHead(204, headers)
       res.end()
@@ -344,7 +569,14 @@ export function apply(ctx, config = {}) {
     const path = url.pathname
 
     if (path === '/api/hello') {
-      send(res, headers, { ok: true, app: APP_ID, version: '0.1.0', ports: servedPorts, tools: tools.length })
+      send(res, headers, {
+        ok: true,
+        app: APP_ID,
+        version: VERSION,
+        ports: servedPorts,
+        tools: tools.length,
+        capture: capture.status().supported,
+      })
       return
     }
 
@@ -356,7 +588,16 @@ export function apply(ctx, config = {}) {
 
     if (path === '/api/detect') {
       const body = await readBody(req)
-      const entry = ensureRoot(body.root)
+      const target = body?.root ?? state.lastRoot
+      if (!target) {
+        send(res, headers, { ok: false, error: '需要一个项目目录：把路径填进面板，或在对话里说一次工作区' }, 400)
+        return
+      }
+      if (!existsSync(target)) {
+        send(res, headers, { ok: false, error: `目录不存在：${target}` }, 404)
+        return
+      }
+      const entry = ensureRoot(target)
       entry.configs = detect(entry.root)
       state.lastRoot = entry.root
       send(res, headers, snapshot(entry.root))
@@ -366,7 +607,7 @@ export function apply(ctx, config = {}) {
     if (path === '/api/run' && req.method === 'POST') {
       const body = await readBody(req)
       try {
-        const result = await runPreview(body.root ?? state.lastRoot, body.configId, body.url, body.waitMs)
+        const result = await runPreview(body.root ?? state.lastRoot, body.configId, body.url, body.waitMs, body.window)
         send(res, headers, result)
       } catch (error) {
         state.lastError = String(error?.message ?? error)
@@ -391,6 +632,82 @@ export function apply(ctx, config = {}) {
 
     if (path === '/api/log') {
       send(res, headers, { ok: true, lines: proc.logTail, active: state.active, running: Boolean(proc.child) })
+      return
+    }
+
+    /* -- native window capture ---------------------------------------- */
+
+    if (path === '/api/window/list') {
+      try {
+        const windows = await capture.list()
+        send(res, headers, { ok: true, windows, capture: capture.status() })
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 500)
+      }
+      return
+    }
+
+    if (path === '/api/window/attach' && req.method === 'POST') {
+      const body = await readBody(req)
+      try {
+        let win = null
+        if (body?.hwnd) {
+          const windows = await capture.list()
+          win = windows.find((w) => String(w.hwnd) === String(body.hwnd)) ?? null
+        } else if (body?.title) {
+          const windows = await capture.list()
+          win = windows.find((w) => w.title.includes(body.title)) ?? null
+        }
+        if (!win) throw new Error('没有选中窗口：先枚举窗口，再传 hwnd 或标题片段')
+        const options = { ...captureOptions(), ...(body.options ?? {}) }
+        const result = await capture.start(win.hwnd, options)
+        state.active = {
+          id: body.configId ?? 'window',
+          title: win.title || '窗口捕获',
+          kind: 'window',
+          hwnd: win.hwnd,
+          windowTitle: win.title,
+          width: win.width,
+          height: win.height,
+          url: `${originOf()}/stream?hwnd=${win.hwnd}&t=${Date.now()}`,
+          startedAt: Date.now(),
+        }
+        send(res, headers, { ...snapshot(state.lastRoot ?? undefined), capture: result })
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 500)
+      }
+      return
+    }
+
+    if (path === '/api/window/stop' && req.method === 'POST') {
+      capture.stop()
+      if (state.active?.kind === 'window') state.active = null
+      send(res, headers, snapshot(state.lastRoot ?? undefined))
+      return
+    }
+
+    // single latest frame, for clients that would rather poll than hold a stream
+    if (path === '/api/frame') {
+      const frame = capture.last()
+      if (!frame || Date.now() - frame.at > 5000) {
+        res.writeHead(204, { ...headers, 'cache-control': 'no-store' })
+        res.end()
+        return
+      }
+      res.writeHead(200, {
+        ...headers,
+        'content-type': 'image/jpeg',
+        'content-length': String(frame.jpeg.length),
+        'cache-control': 'no-store',
+        'x-frame-seq': String(frame.seq),
+      })
+      res.end(frame.jpeg)
+      return
+    }
+
+    // multipart JPEG stream — an <img src> can consume this directly
+    if (path === '/stream') {
+      streamFrames(req, res, headers)
       return
     }
 
@@ -422,7 +739,7 @@ export function apply(ctx, config = {}) {
     send(res, headers, { ok: false, error: 'not found' }, 404)
   }
 
-  async function runPreview(rootArg, configId, overrideUrl, waitMs) {
+  async function runPreview(rootArg, configId, overrideUrl, waitMs, windowRef) {
     const root = rootArg ?? state.lastRoot
     if (!root) throw new Error('还没有工作区：先在对话里让我跑一次预览，或在面板里填入项目路径')
     const cfg = resolveConfig(root, configId)
@@ -440,8 +757,51 @@ export function apply(ctx, config = {}) {
       return { ...snapshot(state.lastRoot), waitedMs: 0 }
     }
 
+    if (windowRef && cfg.kind !== 'native') {
+      const windows = await capture.list()
+      const win =
+        windows.find((w) => String(w.hwnd) === String(windowRef)) ??
+        windows.find((w) => w.title.toLowerCase().includes(String(windowRef).toLowerCase()))
+      if (!win) throw new Error(`没找到匹配「${windowRef}」的窗口：先跑一次 game_preview_windows 看看有哪些`)
+      await capture.start(win.hwnd, captureOptions())
+      state.active = {
+        id: cfg.id, title: win.title || cfg.title, kind: 'window',
+        hwnd: win.hwnd, windowTitle: win.title, width: win.width, height: win.height,
+        url: `${originOf()}/stream?hwnd=${win.hwnd}&t=${Date.now()}`, startedAt: Date.now(),
+      }
+      return { ...snapshot(state.lastRoot), waitedMs: 0 }
+    }
+
     if (cfg.kind === 'native') {
-      throw new Error(`${cfg.title} 的原生窗口捕获在 v0.2；当前请用引擎自带的 Play 按钮`)
+      if (!WindowCapture.supported) throw new Error('窗口捕获只支持 Windows（Win10 1903 及以上）')
+      const launch = nativeLaunch(cfg, config, state.lastRoot)
+      if (launch.error) throw new Error(launch.error)
+      const startedAt = Date.now()
+      const child = spawnDirect(launch.exe, launch.args, state.lastRoot, cfg.title)
+      const win = await waitForWindow({
+        pid: child.pid,
+        titlePattern: cfg.windowMatch,
+        timeoutMs: Number(config.captureWaitMs ?? 30000),
+      })
+      if (!win) {
+        throw new Error(
+          `没找到游戏窗口（${Math.round((Date.now() - startedAt) / 1000)}s）：确认 ${cfg.title} 已经启动；` +
+            'Unity 还要在编辑器里按一次 Play，或者用面板上的「选择窗口」手动挑一个',
+        )
+      }
+      await capture.start(win.hwnd, captureOptions())
+      state.active = {
+        id: cfg.id,
+        title: cfg.title,
+        kind: 'window',
+        hwnd: win.hwnd,
+        windowTitle: win.title,
+        width: win.width,
+        height: win.height,
+        url: `${originOf()}/stream?hwnd=${win.hwnd}&t=${Date.now()}`,
+        startedAt: Date.now(),
+      }
+      return { ...snapshot(state.lastRoot), waitedMs: Date.now() - startedAt }
     }
 
     if (cfg.kind === 'wechat') {
@@ -467,15 +827,14 @@ export function apply(ctx, config = {}) {
     }
     // Cocos: the editor owns the preview server, so start it when a path is configured
     if (cfg.id === 'cocos-web' && config.cocosEditor && existsSync(config.cocosEditor)) {
-      spawnCommand(`"${config.cocosEditor}" --project "${state.lastRoot}"`, state.lastRoot, cfg.title)
+      spawnDirect(config.cocosEditor, ['--project', state.lastRoot], state.lastRoot, cfg.title)
     }
     if (cfg.cmd && !proc.child) spawnCommand(cfg.cmd, state.lastRoot, cfg.title)
     if (cfg.file) {
-      const origin = `http://127.0.0.1:${servedPorts[0] ?? BASE_PORT}`
       const query = `root=${encodeURIComponent(state.lastRoot)}&path=${encodeURIComponent(cfg.file)}`
       state.active = {
         id: cfg.id, title: cfg.title, kind: 'file',
-        url: `${origin}/file?${query}`,
+        url: `${originOf()}/file?${query}`,
         startedAt: Date.now(),
       }
       return { ...snapshot(state.lastRoot), waitedMs: 0 }
@@ -547,6 +906,7 @@ export function apply(ctx, config = {}) {
   })()
 
   cleanup.push(() => killChild())
+  cleanup.push(() => capture.dispose())
   cleanup.push(() => {
     for (const entry of roots.values()) {
       try { entry.watcher?.close() } catch {}
@@ -578,8 +938,9 @@ export function apply(ctx, config = {}) {
     description:
       'Start or refresh the game preview panel for the current workspace: launches the dev server (or attaches to the running one), clears the dirty counter and returns the preview URL plus any start-up error. Use it after editing game code so the user can play the new build.',
     parameters: {
-      config: { type: 'string', description: 'Config id from game_preview_status, e.g. cocos-web or wechat. Omit to use the detected default.' },
+      config: { type: 'string', description: 'Config id from game_preview_status, e.g. cocos-web, godot-native, unity-native. Omit to use the detected default.' },
       url: { type: 'string', description: 'Override the preview URL (manual mode).' },
+      window: { type: 'string', description: 'Attach window capture to this HWND or window-title fragment instead of launching anything. Use after game_preview_windows.' },
     },
     output: {
       schema: { type: 'string' },
@@ -588,7 +949,7 @@ export function apply(ctx, config = {}) {
     async execute(args, exec) {
       const root = await currentRoot(exec)
       try {
-        const result = await runPreview(root, args?.config, args?.url)
+        const result = await runPreview(root, args?.config, args?.url, undefined, args?.window)
         return JSON.stringify({
           ok: result.ok !== false,
           root: result.root,
@@ -596,7 +957,33 @@ export function apply(ctx, config = {}) {
           waitedMs: result.waitedMs,
           error: result.error ?? null,
           dirty: result.dirty?.length ?? 0,
+          capture: result.capture ?? null,
         })
+      } catch (error) {
+        return JSON.stringify({ ok: false, error: String(error?.message ?? error) })
+      }
+    },
+  })
+
+  registerTool({
+    name: 'game_preview_windows',
+    description:
+      'List the capturable top-level windows on this Windows machine (hwnd, pid, size, title). Use it to find the HWND of a running game or editor window, then pass it to game_preview_run via the window parameter.',
+    parameters: {
+      filter: { type: 'string', description: 'Optional case-insensitive substring matched against the window title.' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      try {
+        const windows = await capture.list()
+        const filter = String(args?.filter ?? '').toLowerCase()
+        const rows = windows
+          .filter((w) => !filter || w.title.toLowerCase().includes(filter))
+          .map((w) => ({ hwnd: w.hwnd, pid: w.pid, width: w.width, height: w.height, title: w.title }))
+        return JSON.stringify({ ok: true, supported: WindowCapture.supported, total: windows.length, windows: rows.slice(0, 40) })
       } catch (error) {
         return JSON.stringify({ ok: false, error: String(error?.message ?? error) })
       }

@@ -6,3 +6,10 @@
         waitForMs: 60000
         wechatCli: ''
         cocosEditor: ''
+        godotExe: ''
+        unityExe: ''
+        captureFps: 20
+        captureWidth: 0
+        captureQuality: 70
+        captureWaitMs: 30000
+        allowedOrigins: []

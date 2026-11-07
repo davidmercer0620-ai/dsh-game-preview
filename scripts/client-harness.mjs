@@ -143,6 +143,48 @@ if (!dirtyText.length) throw new Error('running state rendered no dirty badge')
 if (!stageSrcs[0].startsWith('http://127.0.0.1:7317/file')) throw new Error('stage src is not the preview URL')
 if (!dirtyText[0].includes('1 处改动待运行')) throw new Error(`dirty badge text is wrong: ${dirtyText[0]}`)
 
+/* ---------------------------------------- render the window-capture stage (v0.2) */
+
+const windowSnap = {
+  configs: [{ id: 'godot-native', kind: 'native', title: 'Godot · 原生' }],
+  active: {
+    id: 'godot-native', kind: 'window', windowTitle: 'My Game',
+    url: 'http://127.0.0.1:7317/stream?hwnd=4242&t=1',
+  },
+  dirty: [],
+  running: true,
+  capture: { supported: true, running: true, fps: 24.5, width: 1280, height: 720, stale: false, error: null, errorCode: null, black: 0 },
+}
+// useState order in Panel: snap, error, busy, reloadKey, width, manualRoot, manualUrl, windows, winBusy
+react.__states = [windowSnap, null, false, 0, 0, '', '', null, false]
+const windowTree = body.component({})
+const shots = []
+const badges = []
+walk(windowTree, (n) => {
+  if (n.type === 'img') shots.push(n.props)
+  if (typeof n.props?.className === 'string' && n.props.className === 'gp-live') {
+    walk(n, (c) => { if (typeof c.children?.[0] === 'string') badges.push(c.children[0]) })
+  }
+})
+if (shots.length !== 1) throw new Error(`window state rendered ${shots.length} images`)
+if (!String(shots[0].src).includes('/stream?hwnd=4242')) throw new Error('window stage must point at the capture stream')
+if (!badges.some((b) => b.includes('fps'))) throw new Error(`window stage rendered no fps badge: ${badges.join('|')}`)
+
+// a stale capture must show the disconnect badge rather than a silent freeze
+const staleSnap = { ...windowSnap, capture: { ...windowSnap.capture, fps: 0, stale: true } }
+react.__states = [staleSnap, null, false, 0, 0, '', '', null, false]
+const staleTree = body.component({})
+const staleBadges = []
+walk(staleTree, (n) => { if (typeof n.children?.[0] === 'string' && n.children[0] === '已断流') staleBadges.push(n.children[0]) })
+if (!staleBadges.length) throw new Error('a stale capture must show the 已断流 badge')
+
+// the window picker renders one option per capturable window
+react.__states = [windowSnap, null, false, 0, 0, '', '', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], false]
+const pickerTree = body.component({})
+let pickerOptions = 0
+walk(pickerTree, (n) => { if (n.type === 'select') pickerOptions = (n.children ?? []).length })
+if (pickerOptions < 2) throw new Error('window picker rendered no window options')
+
 console.log('modules   ', modules.map((m) => m.id).join(','))
 console.log('tab       ', tab.kind, '| title:', tab.title(), '| guide:', tab.guide.length)
 console.log('slots     ', slots.map((s) => s.options.name).join(', '))

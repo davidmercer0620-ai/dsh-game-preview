@@ -181,3 +181,61 @@ e890ab5 feat: game preview panel for DeepSeek Harness (v0.1)
 ---
 
 有任何一步和文档不一致，以**代码**为准，文档可能落后。改动后麻烦顺手更新这一份。
+
+---
+
+## 10. 2026-11-07 续开发（v0.2.0）
+
+这一轮在接手机器上做完了 v0.2 的 **PR1 抓帧** 和 **PR3 生命周期**，PR2 输入转发仍未做。
+
+### 做了什么
+
+| 改动 | 文件 |
+|---|---|
+| 常驻抓帧助手（C# + 双线程流水线，行协议） | `host/window-capture.ps1` |
+| 抓帧桥：行协议 → Promise / 帧流 / 健康指标 / 崩溃重启一次 | `host/window.js` |
+| Godot / Unity 原生配置从「仅识别」变成真能跑：`godot --path`、`Unity.exe -projectPath` | `index.js` |
+| 新增 `/stream`（multipart）、`/api/frame`、`/api/window/list`、`/api/window/attach`、`/api/window/stop` | `index.js` |
+| 第四个工具 `game_preview_windows`；`game_preview_run` 新增 `window` 参数 | `index.js` |
+| 面板舞台支持 `<img>` 抓帧、fps/断流/黑帧角标、「选择窗口」下拉、宽度持久化 | `client.js` |
+| 修：CORS 回显任意 Origin、`/api/detect` 无 root 时 500、`capture.supported` 用错成实例属性 | `index.js` |
+| harness 增加真实窗口抓帧、原生启动、缺引擎、CORS、detect 守卫五组断言 | `scripts/*.mjs` |
+
+### 验证到了什么（都在本机跑过）
+
+```
+node scripts/harness.mjs         → exit 0
+  记事本窗口 1288×723：attach → frame 200 / JPEG ffd8ff / fps 16.1 / stream multipart 正常
+  关窗后 → errorCode=window-closed（3 秒内）
+  原生路径（project.godot + 替身 exe）→ 418ms 找到窗口，抓帧 15.7 fps，stop 后抓帧停
+  缺引擎 → 报错点名 godotExe
+  CORS：https://evil.example → 403；http://127.0.0.1:56543 → 200
+node scripts/client-harness.mjs  → exit 0（web 舞台 / 窗口舞台 / 断流角标 / 窗口选择器都渲染）
+```
+
+实测帧率：Chrome 1691×995 → **25.4 fps**（抓帧 31ms + 编码 17ms 并行，97KB/帧，0 掉帧）。串行实现只有 12.6 fps，流水线是这版的关键。
+
+### 没验证的（诚实清单）
+
+- **Godot**：本机没装，`godot --path` 只在机制层用替身 exe 验证过。
+- **Unity**：本机有 6000.6.7f1，但没跑真实工程。拉起 → 找窗 → 抓帧的机制是同一条路径；Play 仍需手动按一次（没有编辑器脚本时的已知限制）。
+- **浏览器里的面板**：装完要手动 Ctrl+R；`slots` 检查工具在本会话里传参有 bug，只能靠 client-harness 断言 + 你刷新后肉眼确认。
+
+### 这轮踩的坑（省你几小时）
+
+1. **PowerShell 5.1 的 `Add-Type` 只认 C# 5**：`?.`、字符串插值、`nameof` 全不能编译。报错会指到 `Add-Type` 而不是具体语法。
+2. `Add-Type -CompilerOptions` 在 5.1 不存在（是 `-CompilerParameters`）。所以别用 `unsafe`，`LockBits` 后用 `Marshal.Copy` 拷出来采样。
+3. `EncoderParameter.Value` 在 .NET Framework 里不能赋值，改成每次新建 `EncoderParameter`。
+4. `CreateCompatibleBitmap(IntPtr.Zero, …)` 得到的是 1bpp 单色位图 —— 会报 "A generic error occurred in GDI+"。要传屏幕 DC。
+5. GDI+ 的 `HALFTONE` StretchBlt 极慢（1691→1600 要 208ms），别用它缩放；`InterpolationMode.Bilinear` 也要 30–50ms。**能不缩放就不缩放**。
+6. `PrintWindow(PW_RENDERFULLCONTENT)` 对窗口化的 D3D 应用（Chrome/Unity）能抓到真实画面，包括后台窗口；独占全屏才是黑。
+7. 抓帧 31ms + 编码 17ms 串行只有 12.6 fps，拆成两个线程后 25.4 fps。编码线程忙就丢旧帧，别排队。
+8. 这台机器没有 7z/无 LZMA 的 bsdtar：用 `python -c "import py7zr; py7zr.SevenZipFile(...).extractall('.')"` 解包。
+9. `ops_*` 写文件在本会话被 `PUBLICATION_DENIED` 拒了，改用内置 `write`/`edit`。
+
+### 下一步（按性价比）
+
+1. **PR2 输入转发**：`SendInput` + 前台校验；不做的话舞台永远是"只能看"。
+2. **真实引擎回归**：装个 Godot 4（免安装 zip 即可）跑 `--path`，Unity 拿个小工程试 `-projectPath` + Play。
+3. **WGC 后端**：只换 `window-capture.ps1` 内部，协议不动；判定阈值已在文档里写好。
+4. 发布：`git remote add origin <空仓库>` + `git push -u origin main`。

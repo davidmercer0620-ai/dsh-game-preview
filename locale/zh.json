@@ -1,6 +1,6 @@
 {
   "meta": {
     "title": "游戏预览",
-    "description": "在右侧栏运行游戏项目：运行配置、Playtest Bar 与实时舞台。"
+    "description": "在右侧栏运行游戏项目：运行配置、原生窗口抓帧、Playtest Bar 与实时舞台。"
   }
 }
