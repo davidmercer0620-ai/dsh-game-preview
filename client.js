@@ -20,6 +20,15 @@ window.__ModuleLoader__.load({
     const PORTS = Array.from({ length: 16 }, (_, i) => 7317 + i)
     const WIDTHS = ['100%', '768px', '375px']
     const WIDTH_KEY = 'dsh-game-preview.width'
+    const ROOT_KEY = 'dsh-game-preview.root'
+
+    function readStoredRoot() {
+      try {
+        return String(window.localStorage.getItem(ROOT_KEY) ?? '')
+      } catch {
+        return ''
+      }
+    }
 
     let endpoint = null
 
@@ -126,6 +135,7 @@ window.__ModuleLoader__.load({
         }
       })
       const [manualRoot, setManualRoot] = useState('')
+      const [rootOverride, setRootOverride] = useState(readStoredRoot)
       const [manualUrl, setManualUrl] = useState('')
       const [windows, setWindows] = useState(null)
       const [roots, setRoots] = useState(null)
@@ -140,8 +150,11 @@ window.__ModuleLoader__.load({
       }, [])
 
       const refresh = useCallback(async () => {
+        const query = []
+        if (rootOverride) query.push(`root=${encodeURIComponent(rootOverride)}`)
+        else if (SESSION_ID) query.push(`session=${encodeURIComponent(SESSION_ID)}`)
         try {
-          const next = await call('/api/state' + (SESSION_ID ? `?session=${encodeURIComponent(SESSION_ID)}` : ''))
+          const next = await call('/api/state' + (query.length ? `?${query.join('&')}` : ''))
           if (alive.current) {
             setSnap(next)
             setError(null)
@@ -149,7 +162,7 @@ window.__ModuleLoader__.load({
         } catch (err) {
           if (alive.current) setError(String(err?.message ?? err))
         }
-      }, [])
+      }, [rootOverride])
 
       useEffect(() => {
         alive.current = true
@@ -219,6 +232,10 @@ window.__ModuleLoader__.load({
       const pickRoot = useCallback(async (dir) => {
         if (!dir) return
         setRoots(null)
+        setRootOverride(dir)
+        try {
+          window.localStorage.setItem(ROOT_KEY, dir)
+        } catch {}
         setBusy(true)
         try {
           const next = await call('/api/detect', { method: 'POST', body: JSON.stringify({ root: dir }) })
@@ -257,6 +274,12 @@ window.__ModuleLoader__.load({
           setWinBusy(false)
         }
       }, [])
+
+      // no workspace known (idle session, first run): ask the host what it could use
+      useEffect(() => {
+        if (!snap || snap.root || roots || winBusy) return
+        void openRoots()
+      }, [snap, roots, winBusy, openRoots])
 
       const configs = snap?.configs ?? []
       const active = snap?.active ?? null

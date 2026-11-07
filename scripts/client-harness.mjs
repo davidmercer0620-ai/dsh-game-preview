@@ -156,8 +156,8 @@ const windowSnap = {
   running: true,
   capture: { supported: true, running: true, fps: 24.5, width: 1280, height: 720, stale: false, error: null, errorCode: null, black: 0 },
 }
-// useState order in Panel: snap, error, busy, reloadKey, width, manualRoot, manualUrl, windows, roots, winBusy
-react.__states = [windowSnap, null, false, 0, 0, '', '', null, null, false]
+// useState order in Panel: snap, error, busy, reloadKey, width, manualRoot, rootOverride, manualUrl, windows, roots, winBusy
+react.__states = [windowSnap, null, false, 0, 0, '', '', '', null, null, false]
 const windowTree = body.component({})
 const shots = []
 const badges = []
@@ -173,7 +173,7 @@ if (!badges.some((b) => b.includes('fps'))) throw new Error(`window stage render
 
 // a stale capture must show the disconnect badge rather than a silent freeze
 const staleSnap = { ...windowSnap, capture: { ...windowSnap.capture, fps: 0, stale: true } }
-react.__states = [staleSnap, null, false, 0, 0, '', '', null, null, false]
+react.__states = [staleSnap, null, false, 0, 0, '', '', '', null, null, false]
 const staleTree = body.component({})
 const staleBadges = []
 walk(staleTree, (n) => { if (typeof n.children?.[0] === 'string' && n.children[0] === '已断流') staleBadges.push(n.children[0]) })
@@ -189,11 +189,22 @@ walk(windowTree, (n) => {
 if (!dirChips.length) throw new Error('panel did not render a workspace directory chip')
 
 // the window picker renders one option per capturable window
-react.__states = [windowSnap, null, false, 0, 0, '', '', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
+react.__states = [windowSnap, null, false, 0, 0, '', '', '', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
 const pickerTree = body.component({})
 let pickerOptions = 0
 walk(pickerTree, (n) => { if (n.type === 'select') pickerOptions = (n.children ?? []).length })
 if (pickerOptions < 2) throw new Error('window picker rendered no window options')
+
+// no workspace known yet: the panel must offer the discovered directories
+// instead of a dead end that says "nothing detected"
+const noRootSnap = { root: null, configs: [], active: null, dirty: [], running: false, capture: { supported: true } }
+react.__states = [noRootSnap, null, false, 0, 0, '', '', '', null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
+const noRootTree = body.component({})
+const rootOptions = []
+walk(noRootTree, (n) => {
+  if (n.type === 'select') rootOptions.push((n.children ?? []).length)
+})
+if (!rootOptions.some((n) => n >= 3)) throw new Error('without a workspace the panel must offer the discovered directories')
 
 console.log('modules   ', modules.map((m) => m.id).join(','))
 console.log('tab       ', tab.kind, '| title:', tab.title(), '| guide:', tab.guide.length)

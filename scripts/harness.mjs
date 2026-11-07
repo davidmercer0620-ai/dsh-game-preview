@@ -323,6 +323,32 @@ if (noEngine.ok !== false) throw new Error('a missing engine binary must fail fa
 if (!/godotExe/.test(String(noEngine.error))) throw new Error('the missing-engine error must name the config key')
 for (const d of effects2) { try { d?.() } catch {} }
 
+/* ------------------------- workspace discovery without a live agent */
+
+const ctx3 = {
+  logger: { info() {}, warn: () => {} },
+  get: (name) => (name === 'workspaceRegistry' ? { list: () => [{ id: 'w1', path: godotDir }] } : undefined),
+  effect: (fn) => { const d = fn(); effects.push(d); return d },
+  tools: { register: (def) => { tools.set(def.name, def); return () => tools.delete(def.name) } },
+  workingDirectory: { get: () => undefined },
+}
+apply(ctx3, { port: 7403, waitForMs: 500, godotExe: 'C:\\Windows\\System32\\notepad.exe' })
+await sleep(500)
+
+const idleState = await (await fetch('http://127.0.0.1:7403/api/state')).json()
+console.log('idle host (no live agent) →', idleState.root, '| configs:', idleState.configs.map((c) => c.id).join(','))
+if (!idleState.root) throw new Error('an idle session must still resolve a workspace from the registry')
+if (!idleState.configs.length) throw new Error('registry fallback resolved no configs')
+
+const idleRoots = await (await fetch('http://127.0.0.1:7403/api/roots')).json()
+console.log('idle roots →', idleRoots.roots.map((r) => r.dir).join(' | '))
+if (!idleRoots.roots.length) throw new Error('roots must include registry workspaces')
+
+// a stale remembered path must not blank the panel
+const stalePath = await (await fetch('http://127.0.0.1:7403/api/state?root=' + encodeURIComponent('C:/deleted/project'))).json()
+console.log('stale remembered root →', stalePath.root, '| configs:', stalePath.configs.length)
+if (!stalePath.root) throw new Error('a remembered path that no longer exists must fall back to discovery')
+
 /* --------------------------------------------------------- security + api */
 
 console.log('\n--- control api guards ---')

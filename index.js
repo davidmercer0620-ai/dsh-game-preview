@@ -413,10 +413,25 @@ export function apply(ctx, config = {}) {
       .sort((a, b) => b.at - a.at)
   }
 
+  /** Every workspace DSH has on record, independent of whether an agent is live. */
+  function registryDirs() {
+    const registry = ctx.get('workspaceRegistry')
+    let list = []
+    try {
+      list = registry?.list?.() ?? []
+    } catch {}
+    const out = []
+    for (const entry of list) {
+      const dir = typeof entry === 'string' ? entry : (entry?.path ?? entry?.directory ?? entry?.root)
+      if (typeof dir === 'string' && dir) out.push(dir)
+    }
+    return out
+  }
+
   /**
    * The panel has no Session of its own, and the Host only learns a workspace
-   * from a tool call. Without this, opening the tab in a fresh session shows
-   * "nothing detected" even for a perfectly valid game project.
+   * from a tool call. A live agent is the freshest signal, but an idle session
+   * has none, so the registry is the durable fallback.
    */
   function discoverRoot(sessionId) {
     if (sessionId) {
@@ -438,6 +453,11 @@ export function apply(ctx, config = {}) {
       }
     })
     if (hit) return resolve(hit.dir)
+    for (const dir of registryDirs()) {
+      try {
+        if (existsSync(dir)) return resolve(dir)
+      } catch {}
+    }
     try {
       const fallback = ctx.get('workingDirectory')?.defaultDirectory
       if (fallback && existsSync(fallback)) return resolve(fallback)
@@ -630,6 +650,7 @@ export function apply(ctx, config = {}) {
 
   const servedPorts = []
   const staticRoots = new Set() // absolute directories the static route may serve
+  const requestLog = [] // last few control-API calls, for "the panel is blank" reports
   let server = null
 
   function allowedOrigins() {
@@ -741,6 +762,17 @@ export function apply(ctx, config = {}) {
     const url = new URL(req.url ?? '/', 'http://127.0.0.1')
     const path = url.pathname
 
+    if (path !== '/api/debug') {
+      requestLog.push({
+        at: Date.now(),
+        path,
+        query: url.search || '',
+        origin: req.headers.origin ?? '',
+        ua: String(req.headers['user-agent'] ?? '').slice(-60),
+      })
+      if (requestLog.length > 40) requestLog.shift()
+    }
+
     if (path === '/api/hello') {
       send(res, headers, {
         ok: true,
@@ -754,8 +786,14 @@ export function apply(ctx, config = {}) {
     }
 
     if (path === '/api/state') {
-      const explicit = url.searchParams.get('root') ?? undefined
+      const requested = url.searchParams.get('root') ?? undefined
       const sessionId = url.searchParams.get('session') ?? undefined
+      let explicit = requested
+      try {
+        if (explicit && !existsSync(explicit)) explicit = undefined
+      } catch {
+        explicit = undefined
+      }
       const root = explicit ?? state.lastRoot ?? discoverRoot(sessionId) ?? undefined
       send(res, headers, snapshot(root ?? undefined))
       return
@@ -812,16 +850,65 @@ export function apply(ctx, config = {}) {
 
     /* -- native window capture ---------------------------------------- */
 
+    // read-only introspection: which services this plugin can actually reach
+    if (path === '/api/debug') {
+      const probe = {}
+      for (const name of ['workingDirectory', 'agents', 'workspaceRegistry', 'webServer', 'sessions']) {
+        let service = null
+        try {
+          service = ctx.get(name) ?? null
+        } catch {}
+        const info = { present: Boolean(service), type: typeof service }
+        if (service) {
+          try {
+            info.keys = Object.keys(service).slice(0, 12)
+          } catch {}
+          try {
+            if (typeof service.list === 'function') {
+              const rows = service.list()
+              info.listLength = Array.isArray(rows) ? rows.length : null
+              const first = Array.isArray(rows) ? rows[0] : null
+              info.firstKeys = first && typeof first === 'object' ? Object.keys(first).slice(0, 12) : null
+              info.firstPath =
+                first && typeof first === 'object'
+                  ? (first.path ?? first.record?.path ?? first.directory ?? null)
+                  : null
+            }
+          } catch (error) {
+            info.listError = String(error?.message ?? error)
+          }
+        }
+        probe[name] = info
+      }
+      send(res, headers, {
+        ok: true,
+        probe,
+        liveAgentDirs: liveAgentDirs().map((r) => r.dir),
+        registryDirs: registryDirs(),
+        lastRequests: requestLog.slice(-15),
+      })
+      return
+    }
+
     if (path === '/api/roots') {
       const seenDirs = new Set()
-      const roots = liveAgentDirs()
-        .map((row) => resolve(row.dir))
-        .filter((dir) => {
+      const candidates = [
+        ...liveAgentDirs().map((row) => ({ dir: row.dir, live: true })),
+        ...registryDirs().map((dir) => ({ dir, live: false })),
+      ]
+      const roots = candidates
+        .filter((row) => {
+          try {
+            if (!existsSync(row.dir)) return false
+          } catch {
+            return false
+          }
+          const dir = resolve(row.dir)
           if (seenDirs.has(dir)) return false
           seenDirs.add(dir)
           return true
         })
-        .map((dir) => ({ dir, at: 0 }))
+        .map((row) => ({ dir: resolve(row.dir), at: 0, live: row.live }))
       send(res, headers, { ok: true, roots, current: state.lastRoot ?? discoverRoot() ?? null })
       return
     }
