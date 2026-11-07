@@ -6,7 +6,7 @@
  * only node: builtins and the Cordis context.
  */
 import { createServer } from 'node:http'
-import { spawn } from 'node:child_process'
+import { spawn, execFile } from 'node:child_process'
 import { existsSync, readFileSync, readdirSync, statSync, watch } from 'node:fs'
 import { join, relative, resolve, sep } from 'node:path'
 
@@ -248,12 +248,19 @@ export function apply(ctx, config = {}) {
   /* -- process control -------------------------------------------------- */
 
   function killChild() {
-    if (!proc.child) return
-    try {
-      proc.child.kill()
-    } catch {}
+    const child = proc.child
     proc.child = null
     proc.config = null
+    if (!child) return
+    const pid = child.pid
+    try {
+      // a shell-spawned dev server owns its own children; killing the shell alone leaks them
+      if (process.platform === 'win32' && pid) {
+        execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => {})
+      } else {
+        child.kill()
+      }
+    } catch {}
   }
 
   function spawnCommand(cmd, cwd, label) {
@@ -359,7 +366,7 @@ export function apply(ctx, config = {}) {
     if (path === '/api/run' && req.method === 'POST') {
       const body = await readBody(req)
       try {
-        const result = await runPreview(body.root ?? state.lastRoot, body.configId, body.url)
+        const result = await runPreview(body.root ?? state.lastRoot, body.configId, body.url, body.waitMs)
         send(res, headers, result)
       } catch (error) {
         state.lastError = String(error?.message ?? error)
@@ -415,7 +422,7 @@ export function apply(ctx, config = {}) {
     send(res, headers, { ok: false, error: 'not found' }, 404)
   }
 
-  async function runPreview(rootArg, configId, overrideUrl) {
+  async function runPreview(rootArg, configId, overrideUrl, waitMs) {
     const root = rootArg ?? state.lastRoot
     if (!root) throw new Error('还没有工作区：先在对话里让我跑一次预览，或在面板里填入项目路径')
     const cfg = resolveConfig(root, configId)
@@ -473,7 +480,7 @@ export function apply(ctx, config = {}) {
       }
       return { ...snapshot(state.lastRoot), waitedMs: 0 }
     }
-    const ok = await waitFor(cfg.url, config.waitForMs ?? 60000)
+    const ok = await waitFor(cfg.url, waitMs ?? config.waitForMs ?? 60000)
     state.active = {
       id: cfg.id, title: cfg.title, kind: 'web', url: cfg.url,
       startedAt: Date.now(), ready: ok,

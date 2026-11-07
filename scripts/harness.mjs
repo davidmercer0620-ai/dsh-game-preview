@@ -102,8 +102,55 @@ console.log('cocos run', cocosRun.ok, '|', String(cocosRun.error).slice(0, 80))
 if (cocosRun.ok !== false) throw new Error('cocos timeout must report ok:false')
 if (!/浏览器预览/.test(String(cocosRun.error))) throw new Error('cocos timeout must tell the user what to do next')
 
+/* ------------------------------------- real dev server: start, wait, stop */
+
+const devApp = join(tmpdir(), 'dgp-dev')
+rmSync(devApp, { recursive: true, force: true })
+mkdirSync(devApp, { recursive: true })
+writeFileSync(join(devApp, 'package.json'), JSON.stringify({ scripts: { dev: 'node server.js --port 7458' } }))
+writeFileSync(join(devApp, 'server.js'), [
+  "const http = require('http')",
+  'const port = Number(process.argv.at(-1))',
+  "http.createServer((_q, s) => s.end('ok')).listen(port, '127.0.0.1')",
+].join('\n'))
+
+const devDetect = await detectOf(devApp)
+const devCfg = devDetect.configs.find((c) => c.id === 'node-dev')
+console.log('node-dev config', devCfg?.url)
+if (devCfg?.url !== 'http://localhost:7458') throw new Error('dev url guess is wrong')
+
+const stopDev = () => fetch(base + '/api/stop', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}',
+}).catch(() => {})
+
+try {
+  const devRun = await (await fetch(base + '/api/run', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ configId: 'node-dev', waitMs: 20000 }),
+  })).json()
+  console.log('node-dev run', devRun.ok, 'waited', devRun.waitedMs, 'ms')
+  if (devRun.ok !== true) throw new Error('dev server did not become ready: ' + devRun.error)
+  const devPage = await fetch('http://localhost:7458/')
+  if (!(await devPage.text()).includes('ok')) throw new Error('dev server did not answer')
+
+  await stopDev()
+  let stopped = false
+  for (let i = 0; i < 25 && !stopped; i += 1) {
+    await new Promise((r) => setTimeout(r, 300))
+    try {
+      await fetch('http://localhost:7458/', { signal: AbortSignal.timeout(400) })
+    } catch {
+      stopped = true
+    }
+  }
+  console.log('node-dev stopped', stopped)
+  if (!stopped) throw new Error('stop did not kill the dev server process tree')
+} finally {
+  await stopDev()
+}
+
 for (const d of effects) { try { d?.() } catch {} }
-rmSync(root, { recursive: true, force: true })
-rmSync(wechat, { recursive: true, force: true })
-rmSync(cocos, { recursive: true, force: true })
+for (const dir of [root, wechat, cocos, devApp]) {
+  try { rmSync(dir, { recursive: true, force: true }) } catch {}
+}
 process.exit(0)
