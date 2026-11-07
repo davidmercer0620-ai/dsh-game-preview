@@ -911,6 +911,32 @@ export function apply(ctx, config = {}) {
 
     // read-only introspection: which services this plugin can actually reach
     if (path === '/api/debug') {
+      let routeSelfTest = null
+      try {
+        const conn = ctx.get('connection')
+        const handler = typeof conn?.createSharedFetchHandler === 'function' ? conn.createSharedFetchHandler('/api') : null
+        const stubPeer = new Proxy({}, { get: () => ({ kind: 'self-test', id: 'self-test' }) })
+        const tryPath = async (target) => {
+          try {
+            const response = await handler.fetch(new Request(`http://127.0.0.1${target}`), stubPeer)
+            return `${target} → ${response.status} ${String(await response.text()).slice(0, 80)}`
+          } catch (error) {
+            return `${target} → ERR ${String(error?.message ?? error).slice(0, 80)}`
+          }
+        }
+        routeSelfTest = handler
+          ? {
+              hasHandler: true,
+              attempts: [
+                await tryPath('/api/game-preview/hello'),
+                await tryPath('/game-preview/hello'),
+                await tryPath('/api/game-preview/state'),
+              ],
+            }
+          : { hasHandler: false }
+      } catch (error) {
+        routeSelfTest = { error: String(error?.message ?? error) }
+      }
       const probe = {}
       for (const name of ['workingDirectory', 'agents', 'workspaceRegistry', 'webServer', 'sessions']) {
         let service = null
@@ -945,7 +971,9 @@ export function apply(ctx, config = {}) {
         liveAgentDirs: liveAgentDirs().map((r) => r.dir),
         registryDirs: registryDirs(),
         fetchRoutes: fetchRoutes.length,
+        fetchRoutePaths: [...routePaths],
         sameOrigin: Boolean(ctx.get('connection')?.fetch?.register),
+        routeSelfTest,
         lastRequests: requestLog.slice(-15),
       })
       return
@@ -1379,6 +1407,7 @@ export function apply(ctx, config = {}) {
    */
 
   const fetchRoutes = []
+  const routePaths = new Set()
   function sameOriginRoutes() {
     const connection = ctx.get('connection')
     const register = connection?.fetch?.register
@@ -1386,9 +1415,9 @@ export function apply(ctx, config = {}) {
 
     const add = (path, methods, fetch, requestBody) => {
       try {
-        const route = { path, methods, fetch }
-        if (requestBody) route.requestBody = requestBody
+        const route = { path, methods, requestBody: requestBody ?? 'buffered', fetch }
         fetchRoutes.push(register.call(connection.fetch, route))
+        routePaths.add(path)
       } catch (error) {
         log('fetch route failed', path, String(error))
       }

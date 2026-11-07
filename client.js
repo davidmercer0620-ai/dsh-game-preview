@@ -54,19 +54,34 @@ window.__ModuleLoader__.load({
     async function probe() {
       if (endpoint) return endpoint
 
-      // 1) the Harness origin itself (same-origin route registered by the Host)
+      // 1) the Harness origin itself (same-origin route registered by the Host).
+      // Try the relative form and the absolute origin form: the desktop page may
+      // be file:// where a leading slash no longer resolves.
+      // The desktop preload patches fetch by looking at the literal "/api" prefix,
+      // so never resolve this to an absolute URL before calling fetch.
+      const originAttempts = [`${API}/hello`]
       try {
-        const res = await fetch(`${API}/hello`, { headers: { 'x-game-preview': '1' } })
-        if (res.ok) {
-          const body = await res.json()
-          if (body?.app === APP) {
-            endpoint = API
-            health = { port: null, version: body.version ?? null, error: null, mode: 'origin' }
-            return endpoint
+        const origin = window.location?.origin
+        if (origin && origin !== 'null' && /^https?:/.test(origin)) originAttempts.push(`${origin}${API}/hello`)
+      } catch {}
+      const originNotes = []
+      for (const target of originAttempts) {
+        try {
+          const res = await fetch(target, { headers: { 'x-game-preview': '1' } })
+          if (res.ok) {
+            const body = await res.json()
+            if (body?.app === APP) {
+              endpoint = API
+              health = { port: null, version: body.version ?? null, error: null, mode: 'origin' }
+              return endpoint
+            }
+            originNotes.push(`${target} → app=${body?.app ?? '?'}`)
+          } else {
+            originNotes.push(`${target} → HTTP ${res.status}`)
           }
+        } catch (error) {
+          originNotes.push(`${target} → ${String(error?.message ?? error).slice(0, 60)}`)
         }
-      } catch {
-        /* not mounted on this host: try the loopback control API */
       }
 
       // 2) the loopback control API (web GUI without the same-origin bridge)
@@ -92,7 +107,13 @@ window.__ModuleLoader__.load({
     async function call(path, init = {}) {
       const base = await probe()
       if (!base) {
-        health = { port: null, version: null, error: '宿主未响应：同源路由与 7317–7332 都没有响应', mode: null }
+        const detail = originNotes.length ? originNotes.join(' | ') : '页面没有可用的 origin'
+        health = {
+          port: null,
+          version: null,
+          error: `宿主未响应 · 同源：${detail} · 回环 7317–7332：无响应`,
+          mode: null,
+        }
         throw new Error('宿主未响应：预览服务没有启动')
       }
       const res = await fetch(base + path, {
@@ -136,8 +157,8 @@ window.__ModuleLoader__.load({
         background:color-mix(in srgb, currentColor 6%, transparent);border:1px solid color-mix(in srgb, currentColor 20%, transparent)}
       .gp-note{font-size:11px;opacity:.6;max-width:420px;line-height:1.6}
       .gp-err{color:#d9534f;font-size:11px;padding:6px 10px}
-      .gp-health{display:flex;align-items:center;gap:6px;justify-content:space-between;font-size:10px;opacity:.6;
-        padding:4px 10px;border-bottom:1px solid color-mix(in srgb, currentColor 8%, transparent);word-break:break-all}
+      .gp-health{display:flex;align-items:flex-start;gap:6px;justify-content:space-between;font-size:10px;opacity:.6;
+        padding:4px 10px;border-bottom:1px solid color-mix(in srgb, currentColor 8%, transparent);word-break:break-all;line-height:1.5}
       .gp-hint{color:#c8892f;font-size:11px;padding:6px 10px}
       .gp-picker{display:flex;gap:6px;padding:6px 10px;align-items:center;border-bottom:1px solid color-mix(in srgb, currentColor 12%, transparent)}
     `

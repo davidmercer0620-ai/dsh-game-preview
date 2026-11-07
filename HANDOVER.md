@@ -319,3 +319,11 @@ client-harness：窗口舞台在两种传输下都能渲染
 ### 教训
 
 **别用"另起端口"绕开 Harness 的 API。** 自建 loopback 在 Web 端能跑，在桌面端（`file://` + IPC 桥）直接不通，而且失败是静默的——请求根本不发出去，Host 日志里什么都看不到。判断这类问题最快的办法：**看 Host 有没有收到请求**，而不是看页面显示了什么。
+
+### 追加（v0.2.4）：相对路径不能提前解析
+
+自检发现 `/api/game-preview/hello` 在连接路由表里是**命中**的（返回 403 只因为我传了假 Peer），`/game-preview/hello` 才是 404。真正的问题在客户端探测代码：它先用 `new URL('/api/game-preview/hello', location.href)` 把相对路径**解析成绝对 URL** 再 fetch。桌面端的 fetch 补丁是按 `"/api"` 字面前缀识别的，一旦变成 `file:///api/...` 就不再被接管 → 静默失败。
+
+修法：探测与所有请求一律用字面量 `'/api/game-preview/...'` 调用 fetch；只有在 `location.origin` 是真实 http origin 时才追加一条绝对形式作为备选。
+
+**教训**：在 `file://` 页面里，任何"先规范化 URL 再请求"的写法都可能绕过桥接层。要按官方客户端那样，直接把 `/api/...` 交给 fetch。
