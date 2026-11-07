@@ -1,0 +1,5 @@
+- insert:
+    - id: dsh-game-preview
+      name: dsh-game-preview
+      config:
+        port: 7317

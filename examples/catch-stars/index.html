@@ -1,0 +1,88 @@
+<!doctype html>
+<html lang="zh">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>示例游戏 · 接星星</title>
+  <style>
+    html, body { margin: 0; height: 100%; background: #0b1220; overflow: hidden; }
+    canvas { display: block; width: 100%; height: 100%; }
+    #hud { position: fixed; left: 10px; top: 8px; color: #cfe3ff; font: 12px/1.5 system-ui, sans-serif; opacity: .8 }
+  </style>
+</head>
+<body>
+  <canvas id="game"></canvas>
+  <div id="hud">← → 移动 · 空格重开</div>
+  <script>
+    const cvs = document.getElementById('game')
+    const ctx = cvs.getContext('2d')
+    let W = 0, H = 0, score = 0, over = false
+    const player = { x: 0, y: 0, w: 56, h: 12, speed: 520 }
+    let stars = []
+    const keys = new Set()
+
+    function resize() {
+      W = cvs.width = Math.floor(window.innerWidth * devicePixelRatio)
+      H = cvs.height = Math.floor(window.innerHeight * devicePixelRatio)
+      player.y = H - 60
+      if (!player.x) player.x = W / 2 - player.w / 2
+    }
+    addEventListener('resize', resize)
+    addEventListener('keydown', (e) => {
+      keys.add(e.key)
+      if (e.key === ' ') reset()
+    })
+    addEventListener('keyup', (e) => keys.delete(e.key))
+
+    function reset() {
+      score = 0; over = false; stars = []
+      player.x = W / 2 - player.w / 2
+    }
+
+    function spawn() {
+      stars.push({ x: Math.random() * (W - 24), y: -24, r: 9, v: 180 + Math.random() * 220 })
+    }
+
+    let last = performance.now(), acc = 0, frames = 0, fps = 0, fpsAt = last
+    window.__gameApi = { get score() { return score }, get fps() { return Math.round(fps) }, reset }
+
+    function loop(now) {
+      const dt = Math.min(0.05, (now - last) / 1000)
+      last = now
+      acc += dt; frames++
+      if (now - fpsAt > 500) { fps = frames / ((now - fpsAt) / 1000); frames = 0; fpsAt = now }
+
+      if (!over) {
+        if (keys.has('ArrowLeft')) player.x -= player.speed * dt
+        if (keys.has('ArrowRight')) player.x += player.speed * dt
+        player.x = Math.max(0, Math.min(W - player.w, player.x))
+        if (Math.random() < dt * 1.6) spawn()
+        for (const s of stars) {
+          s.y += s.v * dt
+          if (s.y > player.y && s.y < player.y + 40 && s.x + 20 > player.x && s.x < player.x + player.w) {
+            s.dead = true; score += 1
+          }
+        }
+        stars = stars.filter((s) => !s.dead && s.y < H + 30)
+        if (stars.some((s) => s.y > H - 8)) over = true
+      }
+
+      ctx.fillStyle = '#0b1220'
+      ctx.fillRect(0, 0, W, H)
+      ctx.fillStyle = '#7ee0a8'
+      for (const s of stars) {
+        ctx.beginPath(); ctx.arc(s.x + 12, s.y + 12, s.r, 0, Math.PI * 2); ctx.fill()
+      }
+      ctx.fillStyle = over ? '#ff7a7a' : '#4da3ff'
+      ctx.fillRect(player.x, player.y, player.w, player.h)
+      ctx.fillStyle = '#cfe3ff'
+      ctx.font = `${16 * devicePixelRatio}px system-ui, sans-serif`
+      ctx.fillText(`分数 ${score}${over ? ' · 结束，空格重开' : ''}`, 16 * devicePixelRatio, 30 * devicePixelRatio)
+      requestAnimationFrame(loop)
+    }
+
+    resize()
+    requestAnimationFrame(loop)
+  </script>
+</body>
+</html>
