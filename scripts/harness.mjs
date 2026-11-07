@@ -128,6 +128,8 @@ writeFileSync(join(nested, 'package.json'), JSON.stringify({ scripts: { serve: '
 writeFileSync(join(nested, 'tools', 'serve.mjs'), 'const PORT = 8123\nconsole.log(PORT)\n')
 writeFileSync(join(nested, 'cocos', 'index.html'), '<!doctype html><title>nested</title><canvas></canvas><script src="main.js"></script>')
 writeFileSync(join(nested, 'cocos', 'main.js'), "console.log('nested-js')")
+mkdirSync(join(nested, 'src'), { recursive: true })
+writeFileSync(join(nested, 'src', 'shared.js'), "export const shared = 1")
 
 const nestedDetect = await detectOf(nested)
 console.log('nested configs', nestedDetect.configs.map((c) => `${c.id}@${c.dir ?? '.'}`).join(', '))
@@ -147,6 +149,14 @@ if (!String(nestedStatic.active.url).includes('/static/')) throw new Error('a st
 const nestedPage = await fetch(nestedStatic.active.url)
 const nestedHtml = await nestedPage.text()
 if (!nestedHtml.includes('canvas')) throw new Error('nested static page did not serve the subdirectory file')
+
+// an ES module may reach a sibling directory: the server root is the workspace
+const siblingUrl = new URL(nestedStatic.active.url)
+siblingUrl.pathname = siblingUrl.pathname.replace(/\/[^/]+$/, '/../src/shared.js')
+const sharedRes = await fetch(siblingUrl)
+const sharedBody = await sharedRes.text()
+console.log('sibling module', sharedRes.status, sharedBody.slice(0, 20))
+if (sharedRes.status !== 200 || !sharedBody.includes('shared')) throw new Error('serving must be rooted at the workspace: ' + sharedRes.status)
 
 // a sibling <script src="main.js"> must resolve next to index.html, not at the server root
 const assetUrl = new URL('main.js', nestedStatic.active.url)
@@ -400,9 +410,10 @@ console.log('route frame (idle)', frameRoute.status, frameRoute.type)
 if (frameRoute.status !== 204) throw new Error('an idle capture must answer 204, got ' + frameRoute.status)
 
 // static games are also served as one self-contained HTML for blob playback
-const cocosDir = join(nested, 'cocos')
 const bundleRoute = routes.get('/api/game-preview/bundle')
-const bundleRes = await bundleRoute.fetch(new Request('http://x/api/game-preview/bundle?root=' + encodeURIComponent(cocosDir) + '&file=index.html'))
+const bundleRes = await bundleRoute.fetch(
+  new Request('http://x/api/game-preview/bundle?root=' + encodeURIComponent(nested) + '&file=' + encodeURIComponent('cocos/index.html')),
+)
 const bundleHtml = await bundleRes.text()
 console.log('route bundle', bundleRes.status, bundleHtml.length + 'B', 'inlined js:', bundleHtml.includes('nested-js'))
 if (bundleRes.status !== 200) throw new Error('bundle route failed: ' + bundleRes.status)

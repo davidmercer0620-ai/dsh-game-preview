@@ -1249,13 +1249,26 @@ export function apply(ctx, config = {}) {
     }
     if (cfg.cmd && !proc.child) spawnCommand(cfg.cmd, workdir, cfg.title)
     if (cfg.file) {
-      staticRoots.add(workdir)
+      // root the static server at the workspace, not the subdirectory: an ES
+      // module may import '../src/x.js' from inside web/
+      const serveRoot = state.lastRoot
+      staticRoots.add(serveRoot)
+      const entryPath = (cfg.dir ? `${cfg.dir}/` : '') + cfg.file
+      const entryAbs = resolve(workdir, cfg.file)
+      let moduleEntry = false
+      try {
+        moduleEntry = /<script[^>]+type\s*=\s*["']module/i.test(readFileSync(entryAbs, 'utf8').slice(0, 20000))
+      } catch {}
       state.active = {
         id: cfg.id, title: cfg.title, kind: 'file',
-        url: `${originOf()}/static/${staticToken(workdir)}/${encodeURIComponent(cfg.file)}`,
+        url: `${originOf()}/static/${staticToken(serveRoot)}/${entryPath.split('/').map(encodeURIComponent).join('/')}`,
         // same-origin bundle: the panel can play this from a blob URL even when
-        // the desktop page cannot reach the loopback server at all
-        bundlePath: `${API_PREFIX}/bundle?root=${encodeURIComponent(workdir)}&file=${encodeURIComponent(cfg.file)}`,
+        // the desktop page cannot reach the loopback server at all. ES modules
+        // with relative imports cannot survive inlining, so those keep the
+        // served URL only.
+        ...(moduleEntry
+          ? {}
+          : { bundlePath: `${API_PREFIX}/bundle?root=${encodeURIComponent(workdir)}&file=${encodeURIComponent(cfg.file)}` }),
         startedAt: Date.now(),
       }
       return { ...snapshot(state.lastRoot), waitedMs: 0 }
