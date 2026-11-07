@@ -217,6 +217,17 @@ walk(noRootTree, (n) => {
 })
 if (!rootOptions.some((n) => n >= 3)) throw new Error('without a workspace the panel must offer the discovered directories')
 
+// regression guard: call sites keep the loopback shape '/api/...' while a
+// same-origin base already ends in /api/game-preview, so `call` must strip the
+// duplicated prefix. A missing strip produced '/api/game-preview/api/state' 404s.
+if (!/path\.startsWith\('\/api\/'\)/.test(code) || !/path\.slice\('\/api'\.length\)/.test(code)) {
+  throw new Error('call() must normalise the /api prefix for the same-origin transport')
+}
+const callSites = [...code.matchAll(/call\('([^'?]+)/g)].map((m) => m[1])
+if (!callSites.length) throw new Error('no call sites found to check')
+const badSites = callSites.filter((path) => !path.startsWith('/api/'))
+if (badSites.length) throw new Error('call sites must use the /api/... shape: ' + badSites.join(','))
+
 console.log('modules   ', modules.map((m) => m.id).join(','))
 console.log('tab       ', tab.kind, '| title:', tab.title(), '| guide:', tab.guide.length)
 console.log('slots     ', slots.map((s) => s.options.name).join(', '))

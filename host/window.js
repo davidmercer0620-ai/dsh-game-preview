@@ -167,6 +167,8 @@ export class WindowCapture {
         break
       }
       case 'DATA': {
+        // a frame still in flight when the user hit stop must not repaint the stage
+        if (!this.#state.running) break
         // DATA <seq> <w> <h> <captureMs> <encodeMs> <black> <base64>
         const parts = rest.split(' ')
         const [seq, w, h, captureMs, encodeMs, black, b64] = parts

@@ -106,6 +106,9 @@ window.__ModuleLoader__.load({
 
     async function call(path, init = {}) {
       const base = await probe()
+      // call sites use the loopback shape ('/api/state'); a same-origin base
+      // already ends in /api/game-preview, so drop the duplicated prefix
+      const rel = path.startsWith('/api/') ? path.slice('/api'.length) : path
       if (!base) {
         const detail = originNotes.length ? originNotes.join(' | ') : '页面没有可用的 origin'
         health = {
@@ -116,7 +119,7 @@ window.__ModuleLoader__.load({
         }
         throw new Error('宿主未响应：预览服务没有启动')
       }
-      const res = await fetch(base + path, {
+      const res = await fetch(base + rel, {
         ...init,
         headers: { 'content-type': 'application/json', 'x-game-preview': '1', ...(init.headers ?? {}) },
       })

@@ -327,3 +327,13 @@ client-harness：窗口舞台在两种传输下都能渲染
 修法：探测与所有请求一律用字面量 `'/api/game-preview/...'` 调用 fetch；只有在 `location.origin` 是真实 http origin 时才追加一条绝对形式作为备选。
 
 **教训**：在 `file://` 页面里，任何"先规范化 URL 再请求"的写法都可能绕过桥接层。要按官方客户端那样，直接把 `/api/...` 交给 fetch。
+
+### 追加（v0.2.5）：同源通了，但 call() 把前缀拼重了
+
+面板状态行第一次显示 `宿主 v0.2.3 · 同源`，说明同源路由**已经生效**；紧接着的红字 `HTTP 404` 是客户端自己的 bug：
+
+- `call()` 里的路径仍是 loopback 形态 `/api/state`
+- 同源 base 是 `/api/game-preview`
+- 拼起来成了 `/api/game-preview/api/state` → 404
+
+修法：`call()` 里先去掉路径里的 `/api` 前缀再拼 base；同时在 `client-harness.mjs` 加源码级回归检查（所有 `call('/api/...')` + 必须有 strip 逻辑），这类"两条通道拼接不一致"的问题不会再静默复发。

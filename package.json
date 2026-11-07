@@ -1,6 +1,6 @@
 {
   "name": "dsh-game-preview",
-  "version": "0.2.4",
+  "version": "0.2.5",
   "private": true,
   "description": "Game preview panel for DeepSeek Harness: run configurations, native window capture, and a live stage inside the right sidebar.",
   "type": "module",
