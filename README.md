@@ -123,7 +123,7 @@ Client 与 Host 之间**不依赖任何 Harness 内部 API**：面板探测 7317
 
 ## Roadmap
 
-- **v0.2**：窗口捕获（Godot / Unity 的编辑器 Play 窗口）+ 暂停 / 单步 / 截图。
+- **v0.2**：窗口捕获（Godot / Unity 的编辑器 Play 窗口）+ 暂停 / 单步 / 截图 → 设计见 [docs/v0.2-window-capture.md](docs/v0.2-window-capture.md)
 - **v0.3**：录制与回放（seed + 输入序列），同一段输入对比两个 build。
 - **v0.4**：微信 `miniprogram-automator` 通道（截图 / 脚本输入 / console 捕获）。
 - 之后：引擎桥（Godot TCP 6007、Unity Editor 连接）。
