@@ -128,7 +128,12 @@ Host 插件（零依赖）
 └── host/window-capture.ps1  常驻 PowerShell 助手（C# 抓帧 + 双线程流水线）
 ```
 
-Client 与 Host 之间**不依赖任何 Harness 内部 API**：面板探测 7317–7332 端口，找到自己的 Host 就位（`/api/hello` 认领）。因此 DSH 大版本升级时，插件里没有会碎的私有契约。
+Client 与 Host 之间有两条通道，**面板优先走同源**：
+
+- **同源 `/api/game-preview/*`**（首选）：Host 用 `ctx.connection.fetch.register` 挂上 11 条路由，面板用相对地址请求。桌面端页面是 `file://`、fetch 走 IPC 桥，只有这条能通。
+- **loopback `127.0.0.1:7317`**（兜底）：Host 自建的 HTTP 控制服务，Web 端和命令行 curl 用；面板探测 7317–7332 认领。
+
+两条通道共用同一套处理逻辑，HTTP 只是外壳。
 
 ### 抓帧为什么用 PowerShell 助手
 

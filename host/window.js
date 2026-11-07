@@ -291,6 +291,7 @@ export class WindowCapture {
     this.#state.hwnd = null
     this.#restart.hwnd = null
     this.#frames = []
+    this.#last = null // a stopped preview must not keep serving a stale picture
     return this.status()
   }
 

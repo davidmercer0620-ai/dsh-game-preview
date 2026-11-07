@@ -19,9 +19,18 @@ writeFileSync(join(root, 'index.html'), '<!doctype html><title>t</title><canvas>
 
 const tools = new Map()
 const effects = []
+const routes = new Map()
+const connectionStub = {
+  fetch: {
+    register: (route) => {
+      routes.set(route.path, route)
+      return () => routes.delete(route.path)
+    },
+  },
+}
 const ctx = {
   logger: { info() {}, warn: (...a) => console.error('WARN', ...a) },
-  get: () => undefined,
+  get: (name) => (name === 'connection' ? connectionStub : undefined),
   effect: (fn) => { const d = fn(); effects.push(d); return d },
   tools: { register: (def) => { tools.set(def.name, def); return () => tools.delete(def.name) } },
   workingDirectory: { get: () => root },
@@ -348,6 +357,51 @@ if (!idleRoots.roots.length) throw new Error('roots must include registry worksp
 const stalePath = await (await fetch('http://127.0.0.1:7403/api/state?root=' + encodeURIComponent('C:/deleted/project'))).json()
 console.log('stale remembered root →', stalePath.root, '| configs:', stalePath.configs.length)
 if (!stalePath.root) throw new Error('a remembered path that no longer exists must fall back to discovery')
+
+/* ------------------------------------- same-origin routes (desktop bridge) */
+
+console.log('\n--- same-origin /api/game-preview routes ---')
+
+const expectedRoutes = [
+  '/api/game-preview/hello', '/api/game-preview/state', '/api/game-preview/roots',
+  '/api/game-preview/detect', '/api/game-preview/run', '/api/game-preview/stop',
+  '/api/game-preview/window/list', '/api/game-preview/window/attach',
+  '/api/game-preview/window/stop', '/api/game-preview/frame', '/api/game-preview/log',
+]
+const missingRoutes = expectedRoutes.filter((path) => !routes.has(path))
+console.log('routes registered', routes.size, missingRoutes.length ? '| missing: ' + missingRoutes.join(',') : '')
+if (missingRoutes.length) throw new Error('same-origin routes missing: ' + missingRoutes.join(','))
+
+async function callRoute(path, init) {
+  const route = routes.get(path)
+  const request = new Request('http://harness.local' + path, init)
+  const response = await route.fetch(request)
+  const type = response.headers.get('content-type') ?? ''
+  const body = type.includes('json') ? await response.json() : Buffer.from(await response.arrayBuffer())
+  return { status: response.status, type, body }
+}
+
+const helloRoute = await callRoute('/api/game-preview/hello')
+console.log('route hello', helloRoute.status, helloRoute.body.app, helloRoute.body.version)
+if (helloRoute.body.app !== 'dsh-game-preview') throw new Error('same-origin hello returned the wrong app id')
+
+const stateRoute = await callRoute('/api/game-preview/state')
+console.log('route state', stateRoute.status, 'root:', stateRoute.body.root, '| configs:', stateRoute.body.configs.length)
+if (stateRoute.status !== 200 || !stateRoute.body.root) throw new Error('same-origin state did not resolve a workspace')
+
+const detectRoute = await callRoute('/api/game-preview/detect', {
+  method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ root: godotDir }),
+})
+console.log('route detect', detectRoute.status, detectRoute.body.configs.map((c) => c.id).join(','))
+if (!detectRoute.body.configs.length) throw new Error('same-origin detect found nothing')
+
+const frameRoute = await callRoute('/api/game-preview/frame')
+console.log('route frame (idle)', frameRoute.status, frameRoute.type)
+if (frameRoute.status !== 204) throw new Error('an idle capture must answer 204, got ' + frameRoute.status)
+
+const rootsRoute = await callRoute('/api/game-preview/roots')
+console.log('route roots', rootsRoute.status, rootsRoute.body.roots.length)
+if (!Array.isArray(rootsRoute.body.roots)) throw new Error('same-origin roots returned no array')
 
 /* --------------------------------------------------------- security + api */
 

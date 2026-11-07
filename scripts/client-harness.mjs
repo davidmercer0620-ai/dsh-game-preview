@@ -106,6 +106,17 @@ if (!header) throw new Error('header button was not registered')
 function walk(node, visit) {
   if (!node || typeof node !== 'object') return
   visit(node)
+  if (typeof node.type === 'function') {
+    // render the nested component once so its markup is part of the tree
+    let rendered = null
+    try {
+      rendered = node.type(node.props ?? {})
+    } catch {
+      rendered = null
+    }
+    if (rendered) walk(rendered, visit)
+    return
+  }
   for (const child of node.children ?? []) walk(child, visit)
 }
 

@@ -17,6 +17,10 @@ window.__ModuleLoader__.load({
 
     const KIND = 'game-preview'
     const ID = 'dsh-game-preview'
+    const APP = 'dsh-game-preview'
+    // Same-origin first: the desktop app loads its page from file:// and carries
+    // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
+    const API = '/api/game-preview'
     const PORTS = Array.from({ length: 16 }, (_, i) => 7317 + i)
     const WIDTHS = ['100%', '768px', '375px']
     const WIDTH_KEY = 'dsh-game-preview.width'
@@ -31,6 +35,7 @@ window.__ModuleLoader__.load({
     }
 
     let endpoint = null
+    let health = { port: null, version: null, error: null, mode: null }
 
     // The panel has no Session of its own; if the page URL carries one, hand it
     // to the Host so it can resolve this session's working directory.
@@ -48,6 +53,23 @@ window.__ModuleLoader__.load({
 
     async function probe() {
       if (endpoint) return endpoint
+
+      // 1) the Harness origin itself (same-origin route registered by the Host)
+      try {
+        const res = await fetch(`${API}/hello`, { headers: { 'x-game-preview': '1' } })
+        if (res.ok) {
+          const body = await res.json()
+          if (body?.app === APP) {
+            endpoint = API
+            health = { port: null, version: body.version ?? null, error: null, mode: 'origin' }
+            return endpoint
+          }
+        }
+      } catch {
+        /* not mounted on this host: try the loopback control API */
+      }
+
+      // 2) the loopback control API (web GUI without the same-origin bridge)
       for (const port of PORTS) {
         try {
           const res = await fetch(`http://127.0.0.1:${port}/api/hello`, {
@@ -55,8 +77,9 @@ window.__ModuleLoader__.load({
           })
           if (!res.ok) continue
           const body = await res.json()
-          if (body?.app === 'dsh-game-preview') {
-            endpoint = `http://127.0.0.1:${port}`
+          if (body?.app === APP) {
+            endpoint = `http://127.0.0.1:${port}/api`
+            health = { port, version: body.version ?? null, error: null, mode: 'loopback' }
             return endpoint
           }
         } catch {
@@ -68,7 +91,10 @@ window.__ModuleLoader__.load({
 
     async function call(path, init = {}) {
       const base = await probe()
-      if (!base) throw new Error('宿主未响应：预览服务没有启动')
+      if (!base) {
+        health = { port: null, version: null, error: '宿主未响应：同源路由与 7317–7332 都没有响应', mode: null }
+        throw new Error('宿主未响应：预览服务没有启动')
+      }
       const res = await fetch(base + path, {
         ...init,
         headers: { 'content-type': 'application/json', 'x-game-preview': '1', ...(init.headers ?? {}) },
@@ -110,6 +136,8 @@ window.__ModuleLoader__.load({
         background:color-mix(in srgb, currentColor 6%, transparent);border:1px solid color-mix(in srgb, currentColor 20%, transparent)}
       .gp-note{font-size:11px;opacity:.6;max-width:420px;line-height:1.6}
       .gp-err{color:#d9534f;font-size:11px;padding:6px 10px}
+      .gp-health{display:flex;align-items:center;gap:6px;justify-content:space-between;font-size:10px;opacity:.6;
+        padding:4px 10px;border-bottom:1px solid color-mix(in srgb, currentColor 8%, transparent);word-break:break-all}
       .gp-hint{color:#c8892f;font-size:11px;padding:6px 10px}
       .gp-picker{display:flex;gap:6px;padding:6px 10px;align-items:center;border-bottom:1px solid color-mix(in srgb, currentColor 12%, transparent)}
     `
@@ -117,6 +145,50 @@ window.__ModuleLoader__.load({
     function useStyles() {
       // returns a style element rendered inside the panel so unmounting removes it
       return h('style', { 'data-game-preview': '1' }, css)
+    }
+
+    /* ------------------------------------------------------- window stage */
+
+    /**
+     * Native windows arrive either as one MJPEG <img> (loopback) or as polled
+     * JPEG bytes (same-origin, where <img> cannot reach the control API).
+     */
+    function WindowStage({ mode, fallbackUrl, reloadKey, alt, onError }) {
+      const isOrigin = mode === 'origin'
+      const [src, setSrc] = useState(isOrigin ? null : fallbackUrl)
+      useEffect(() => {
+        if (!isOrigin) {
+          setSrc(`${fallbackUrl}${fallbackUrl.includes('?') ? '&' : '?'}t=${reloadKey}`)
+          return undefined
+        }
+        let alive = true
+        let timer = null
+        let currentUrl = null
+        const tick = async () => {
+          try {
+            const res = await fetch(`${API}/frame?t=${Date.now()}`, { headers: { 'x-game-preview': '1' } })
+            if (res.status === 200 && alive) {
+              const blob = await res.blob()
+              if (alive) {
+                const next = URL.createObjectURL(blob)
+                if (currentUrl) URL.revokeObjectURL(currentUrl)
+                currentUrl = next
+                setSrc(next)
+              }
+            }
+          } catch {
+            /* the host may be restarting; the next tick retries */
+          }
+          if (alive) timer = setTimeout(tick, 70)
+        }
+        void tick()
+        return () => {
+          alive = false
+          if (timer) clearTimeout(timer)
+          if (currentUrl) URL.revokeObjectURL(currentUrl)
+        }
+      }, [isOrigin, fallbackUrl, reloadKey])
+      return h('img', { className: 'gp-shot', src: src ?? undefined, alt: alt ?? 'game window', onError })
     }
 
     /* ------------------------------------------------------------- panel */
@@ -191,6 +263,17 @@ window.__ModuleLoader__.load({
           setBusy(false)
         }
       }, [manualUrl])
+
+      const reconnect = useCallback(async () => {
+        endpoint = null
+        health = { port: null, version: null, error: null, mode: null }
+        setBusy(true)
+        try {
+          await refresh()
+        } finally {
+          setBusy(false)
+        }
+      }, [refresh])
 
       const stop = useCallback(async () => {
         setBusy(true)
@@ -333,10 +416,11 @@ window.__ModuleLoader__.load({
       const stage = url
         ? isWindow
           ? h('div', { className: 'gp-stage' },
-              h('img', {
+              h(WindowStage, {
                 key: `${url}#${reloadKey}`,
-                className: 'gp-shot',
-                src: url,
+                mode: health.mode,
+                fallbackUrl: url,
+                reloadKey,
                 alt: active?.windowTitle ?? 'game window',
                 onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
               }),
@@ -416,6 +500,11 @@ window.__ModuleLoader__.load({
             dirty.length ? [h('span', { key: 'd', className: 'gp-dot' }), `${dirty.length} 处改动待运行`] : '已同步')),
         rootPicker,
         picker,
+        h('div', { className: 'gp-health' },
+          health.mode
+            ? `宿主 v${health.version ?? '?'} · ${health.mode === 'origin' ? '同源' : ':' + health.port}${snap?.root ? ' · ' + snap.root : ''}`
+            : (health.error ?? '正在连接宿主…'),
+          h('button', { className: 'gp-btn', disabled: busy, onClick: () => void reconnect() }, '重新连接')),
         error ? h('div', { className: 'gp-err' }, error) : null,
         blackHint ? h('div', { className: 'gp-hint' }, blackHint) : null,
         stage,

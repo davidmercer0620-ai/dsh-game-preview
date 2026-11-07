@@ -279,3 +279,43 @@ harness：嵌套检测、serve 端口解析、相对资源、未注册 root 403 
 
 - `F:\降维联盟` 的 `npm run serve` 指向 `tools/serve.mjs`，**这个文件现在不存在**（web/ 是直接静态页），所以真正的开发回路目前是 `static@web`；等 serve.mjs 写出来，端口会被自动读出来。
 - 微信小游戏仍然只负责调起开发者工具，本机没装 cli。
+
+---
+
+## 12. 2026-11-08 真因：桌面端跨端口 fetch 根本不通（v0.2.3）
+
+### 现象
+
+面板一直"没检测到"，但 Host 用 curl 查一切正常。
+
+### 证据链
+
+1. 面板打开着，Host 的请求日志里 **0 条记录**——浏览器侧一次都没发出请求。
+2. 读 `@deepseek-ai/dsh-host-webserver` 的 README 第一段：
+
+   > It serves browsers only; **Electron loads dist over `file://` and carries fetch over an IPC bridge.**
+
+3. 反编译 `dsh-context`（同机已装）的客户端，全部请求都是**同源相对路径** `fetch('/api/dsh-context/snapshot', …)`；宿主端用
+   `ctx.connection.fetch.register({ path, methods, requestBody, fetch })` 挂路由。
+
+结论：**Electron 桌面端页面是 `file://` 起源，fetch 被 IPC 桥接管，只承载同源 `/api` 请求**。v0.1 设计的"自建 7317 端口 + 绝对地址"在桌面端永远到不了 Host——之前的"能拿到空快照"只是 Web 端/旧进程的假象。这也是当初"面板能否画出来"一直没人验证的那条洞。
+
+### 修法（v0.2.3）
+
+- Host 在 `apply()` 里通过 `ctx.connection.fetch.register` 注册 **11 条同源路由**：`/api/game-preview/{hello,state,roots,detect,run,stop,window/list,window/attach,window/stop,frame,log}`。
+- 两条通道共用同一批处理函数（`snapshot` / `runPreview` / `attachWindow` / `rootsPayload`），HTTP 层只是外壳。
+- 面板 `probe()` 先试同源 `api/game-preview/hello`，不通才退回 7317–7332 探测；顶栏状态行显示 `宿主 v0.2.3 · 同源 · F:\…`。
+- 原生窗口画面在桌面端不能用 `<img src=流>`（同样跨端口），改为 **`/api/game-preview/frame` 轮询 → blob URL**，14 fps 左右；Web 端仍可走 MJPEG。
+- `/api/debug` 增加 `sameOrigin` / `fetchRoutes` 两个字段，一眼看出桥有没有挂上。
+
+### 验证
+
+```
+/api/debug → sameOrigin: true, fetchRoutes: 11
+harness：11 条路由全部注册；hello/state/detect/roots 返回正确；未抓帧时 frame 返回 204
+client-harness：窗口舞台在两种传输下都能渲染
+```
+
+### 教训
+
+**别用"另起端口"绕开 Harness 的 API。** 自建 loopback 在 Web 端能跑，在桌面端（`file://` + IPC 桥）直接不通，而且失败是静默的——请求根本不发出去，Host 日志里什么都看不到。判断这类问题最快的办法：**看 Host 有没有收到请求**，而不是看页面显示了什么。

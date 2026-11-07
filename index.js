@@ -187,6 +187,17 @@ function nativeLaunch(cfg, config, root) {
   return { error: `未知的原生引擎：${cfg.engine}` }
 }
 
+/* --------------------------------------------------- same-origin responses */
+
+const API_PREFIX = '/api/game-preview'
+
+function jsonResponse(body, status = 200) {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' },
+  })
+}
+
 /* ------------------------------------------------------------- detection */
 
 const SCRIPT_ORDER = ['dev', 'start', 'serve', 'preview']
@@ -646,6 +657,54 @@ export function apply(ctx, config = {}) {
     return entry.configs.find((c) => c.id === configId) ?? entry.configs[0]
   }
 
+  function rootsPayload() {
+    const seenDirs = new Set()
+    const candidates = [
+      ...liveAgentDirs().map((row) => ({ dir: row.dir, live: true })),
+      ...registryDirs().map((dir) => ({ dir, live: false })),
+    ]
+    const roots = candidates
+      .filter((row) => {
+        try {
+          if (!existsSync(row.dir)) return false
+        } catch {
+          return false
+        }
+        const dir = resolve(row.dir)
+        if (seenDirs.has(dir)) return false
+        seenDirs.add(dir)
+        return true
+      })
+      .map((row) => ({ dir: resolve(row.dir), at: 0, live: row.live }))
+    return { ok: true, roots, current: state.lastRoot ?? discoverRoot() ?? null }
+  }
+
+  async function attachWindow(body) {
+    let win = null
+    if (body?.hwnd) {
+      const windows = await capture.list()
+      win = windows.find((w) => String(w.hwnd) === String(body.hwnd)) ?? null
+    } else if (body?.title) {
+      const windows = await capture.list()
+      win = windows.find((w) => w.title.includes(body.title)) ?? null
+    }
+    if (!win) throw new Error('没有选中窗口：先枚举窗口，再传 hwnd 或标题片段')
+    const options = { ...captureOptions(), ...(body.options ?? {}) }
+    const started = await capture.start(win.hwnd, options)
+    state.active = {
+      id: body.configId ?? 'window',
+      title: win.title || '窗口捕获',
+      kind: 'window',
+      hwnd: win.hwnd,
+      windowTitle: win.title,
+      width: win.width,
+      height: win.height,
+      url: `${originOf()}/stream?hwnd=${win.hwnd}&t=${Date.now()}`,
+      startedAt: Date.now(),
+    }
+    return { ...snapshot(state.lastRoot ?? undefined), capture: started }
+  }
+
   /* -- HTTP control API ------------------------------------------------- */
 
   const servedPorts = []
@@ -885,31 +944,15 @@ export function apply(ctx, config = {}) {
         probe,
         liveAgentDirs: liveAgentDirs().map((r) => r.dir),
         registryDirs: registryDirs(),
+        fetchRoutes: fetchRoutes.length,
+        sameOrigin: Boolean(ctx.get('connection')?.fetch?.register),
         lastRequests: requestLog.slice(-15),
       })
       return
     }
 
     if (path === '/api/roots') {
-      const seenDirs = new Set()
-      const candidates = [
-        ...liveAgentDirs().map((row) => ({ dir: row.dir, live: true })),
-        ...registryDirs().map((dir) => ({ dir, live: false })),
-      ]
-      const roots = candidates
-        .filter((row) => {
-          try {
-            if (!existsSync(row.dir)) return false
-          } catch {
-            return false
-          }
-          const dir = resolve(row.dir)
-          if (seenDirs.has(dir)) return false
-          seenDirs.add(dir)
-          return true
-        })
-        .map((row) => ({ dir: resolve(row.dir), at: 0, live: row.live }))
-      send(res, headers, { ok: true, roots, current: state.lastRoot ?? discoverRoot() ?? null })
+      send(res, headers, rootsPayload())
       return
     }
 
@@ -926,29 +969,7 @@ export function apply(ctx, config = {}) {
     if (path === '/api/window/attach' && req.method === 'POST') {
       const body = await readBody(req)
       try {
-        let win = null
-        if (body?.hwnd) {
-          const windows = await capture.list()
-          win = windows.find((w) => String(w.hwnd) === String(body.hwnd)) ?? null
-        } else if (body?.title) {
-          const windows = await capture.list()
-          win = windows.find((w) => w.title.includes(body.title)) ?? null
-        }
-        if (!win) throw new Error('没有选中窗口：先枚举窗口，再传 hwnd 或标题片段')
-        const options = { ...captureOptions(), ...(body.options ?? {}) }
-        const result = await capture.start(win.hwnd, options)
-        state.active = {
-          id: body.configId ?? 'window',
-          title: win.title || '窗口捕获',
-          kind: 'window',
-          hwnd: win.hwnd,
-          windowTitle: win.title,
-          width: win.width,
-          height: win.height,
-          url: `${originOf()}/stream?hwnd=${win.hwnd}&t=${Date.now()}`,
-          startedAt: Date.now(),
-        }
-        send(res, headers, { ...snapshot(state.lastRoot ?? undefined), capture: result })
+        send(res, headers, await attachWindow(body))
       } catch (error) {
         send(res, headers, { ok: false, error: String(error?.message ?? error) }, 500)
       }
@@ -1349,6 +1370,140 @@ export function apply(ctx, config = {}) {
       try { dispose?.() } catch {}
     }
   }, 'game-preview tools')
+
+  /* -- same-origin routes for the panel --------------------------------
+   * The desktop app loads its page from file:// and carries fetch over an
+   * IPC bridge, so an absolute http://127.0.0.1:7317 call never reaches the
+   * loopback server there. Every panel request therefore also exists as a
+   * same-origin /api/game-preview/* route registered on the connection.
+   */
+
+  const fetchRoutes = []
+  function sameOriginRoutes() {
+    const connection = ctx.get('connection')
+    const register = connection?.fetch?.register
+    if (typeof register !== 'function') return
+
+    const add = (path, methods, fetch, requestBody) => {
+      try {
+        const route = { path, methods, fetch }
+        if (requestBody) route.requestBody = requestBody
+        fetchRoutes.push(register.call(connection.fetch, route))
+      } catch (error) {
+        log('fetch route failed', path, String(error))
+      }
+    }
+
+    const urlOf = (request, fallback) => {
+      try {
+        const raw = String(request?.url ?? '')
+        return new URL(raw, fallback).searchParams
+      } catch {
+        return new URLSearchParams()
+      }
+    }
+
+    add(`${API_PREFIX}/hello`, ['GET'], () =>
+      jsonResponse({ ok: true, app: APP_ID, version: VERSION, tools: tools.length, capture: WindowCapture.supported }),
+    )
+
+    add(`${API_PREFIX}/state`, ['GET'], (request) => {
+      const params = urlOf(request, originOf())
+      const requested = params.get('root') ?? undefined
+      let explicit = requested
+      try {
+        if (explicit && !existsSync(explicit)) explicit = undefined
+      } catch {
+        explicit = undefined
+      }
+      const root = explicit ?? state.lastRoot ?? discoverRoot(params.get('session') ?? undefined) ?? undefined
+      return jsonResponse(snapshot(root ?? undefined))
+    })
+
+    add(`${API_PREFIX}/roots`, ['GET'], () => jsonResponse(rootsPayload()))
+
+    add(`${API_PREFIX}/detect`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      const target = body?.root ?? state.lastRoot ?? discoverRoot(body?.session)
+      if (!target) return jsonResponse({ ok: false, error: '需要一个项目目录' }, 400)
+      if (!existsSync(target)) return jsonResponse({ ok: false, error: `目录不存在：${target}` }, 404)
+      const entry = ensureRoot(target)
+      entry.configs = detect(entry.root)
+      state.lastRoot = entry.root
+      return jsonResponse(snapshot(entry.root))
+    }, 'buffered')
+
+    add(`${API_PREFIX}/run`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      try {
+        return jsonResponse(await runPreview(body.root ?? state.lastRoot, body.configId, body.url, body.waitMs, body.window))
+      } catch (error) {
+        state.lastError = String(error?.message ?? error)
+        return jsonResponse({ ok: false, error: state.lastError }, 500)
+      }
+    }, 'buffered')
+
+    add(`${API_PREFIX}/stop`, ['POST'], () => {
+      killChild()
+      state.active = null
+      return jsonResponse(snapshot(state.lastRoot ?? undefined))
+    })
+
+    add(`${API_PREFIX}/window/list`, ['GET'], async () => {
+      try {
+        return jsonResponse({ ok: true, windows: await capture.list(), capture: capture.status() })
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+      }
+    })
+
+    add(`${API_PREFIX}/window/stop`, ['POST'], () => {
+      capture.stop()
+      if (state.active?.kind === 'window') state.active = null
+      return jsonResponse(snapshot(state.lastRoot ?? undefined))
+    })
+
+    add(`${API_PREFIX}/window/attach`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      try {
+        const attach = await attachWindow(body)
+        return jsonResponse(attach)
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+      }
+    }, 'buffered')
+
+    add(`${API_PREFIX}/frame`, ['GET'], () => {
+      const frame = capture.last()
+      if (!frame || Date.now() - frame.at > 5000) return new Response(null, { status: 204 })
+      return new Response(frame.jpeg, {
+        status: 200,
+        headers: { 'content-type': 'image/jpeg', 'cache-control': 'no-store', 'x-frame-seq': String(frame.seq) },
+      })
+    })
+
+    add(`${API_PREFIX}/log`, ['GET'], () =>
+      jsonResponse({ ok: true, lines: proc.logTail, active: state.active, running: Boolean(proc.child) }),
+    )
+  }
+
+  ctx.effect(() => {
+    sameOriginRoutes()
+    return () => {
+      for (const dispose of fetchRoutes.splice(0)) {
+        try { dispose?.() } catch {}
+      }
+    }
+  }, 'game-preview fetch routes')
 
   log('ready')
 }
