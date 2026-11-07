@@ -81,6 +81,7 @@ plugin_manager install_bundle(target: "C:\\path\\to\\dsh-game-preview")
     port: 7317          # 控制 API 起始端口，被占用时自动往后找
     waitForMs: 60000    # 等 dev server 就绪的上限
     wechatCli: ""       # 微信开发者工具 cli.bat 的绝对路径，留空则自动找常见路径
+    cocosEditor: ""     # CocosCreator.exe 的绝对路径；填了就能替你启动编辑器
 ```
 
 ## 它是怎么跑起来的

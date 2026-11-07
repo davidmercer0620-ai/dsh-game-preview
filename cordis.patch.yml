@@ -3,3 +3,6 @@
       name: dsh-game-preview
       config:
         port: 7317
+        waitForMs: 60000
+        wechatCli: ''
+        cocosEditor: ''

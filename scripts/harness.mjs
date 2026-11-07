@@ -23,7 +23,7 @@ const ctx = {
   workingDirectory: { get: () => root },
 }
 
-apply(ctx, { port: 7401 })
+apply(ctx, { port: 7401, waitForMs: 1500 })
 
 await new Promise((r) => setTimeout(r, 600))
 const base = 'http://127.0.0.1:7401'
@@ -93,6 +93,14 @@ const cocosDetect = await detectOf(cocos)
 console.log('cocos configs', cocosDetect.configs.map((c) => `${c.id}@${c.url}`).join(','))
 const cocosCfg = cocosDetect.configs.find((c) => c.id === 'cocos-web')
 if (!cocosCfg || cocosCfg.url !== 'http://localhost:7456') throw new Error('cocos detection is wrong')
+
+const cocosRun = await (await fetch(base + '/api/run', {
+  method: 'POST', headers: { 'content-type': 'application/json' },
+  body: JSON.stringify({ configId: 'cocos-web' }),
+})).json()
+console.log('cocos run', cocosRun.ok, '|', String(cocosRun.error).slice(0, 80))
+if (cocosRun.ok !== false) throw new Error('cocos timeout must report ok:false')
+if (!/浏览器预览/.test(String(cocosRun.error))) throw new Error('cocos timeout must tell the user what to do next')
 
 for (const d of effects) { try { d?.() } catch {} }
 rmSync(root, { recursive: true, force: true })

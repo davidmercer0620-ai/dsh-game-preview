@@ -458,6 +458,10 @@ export function apply(ctx, config = {}) {
       state.active = { id: cfg.id, title: cfg.title, kind: 'web', url: cfg.url, startedAt: Date.now() }
       return { ...snapshot(state.lastRoot), waitedMs: 0 }
     }
+    // Cocos: the editor owns the preview server, so start it when a path is configured
+    if (cfg.id === 'cocos-web' && config.cocosEditor && existsSync(config.cocosEditor)) {
+      spawnCommand(`"${config.cocosEditor}" --project "${state.lastRoot}"`, state.lastRoot, cfg.title)
+    }
     if (cfg.cmd && !proc.child) spawnCommand(cfg.cmd, state.lastRoot, cfg.title)
     if (cfg.file) {
       const origin = `http://127.0.0.1:${servedPorts[0] ?? BASE_PORT}`
@@ -475,9 +479,12 @@ export function apply(ctx, config = {}) {
       startedAt: Date.now(), ready: ok,
     }
     if (!ok) {
-      state.lastError = `等 ${cfg.url} 超时（${Math.round((Date.now() - started) / 1000)}s）`
+      const seconds = Math.round((Date.now() - started) / 1000)
+      state.lastError = cfg.id === 'cocos-web'
+        ? `Cocos 预览服务 ${cfg.url} 没起来（${seconds}s）。在 Cocos Creator 里点一次「浏览器预览」，或把编辑器路径填进 config.cocosEditor，下次我帮你启动。`
+        : `等 ${cfg.url} 超时（${seconds}s）：${cfg.cmd ? '看面板下方日志里 dev server 的报错' : '确认服务已启动'}` 
     }
-    return { ...snapshot(state.lastRoot), waitedMs: Date.now() - started, ready: ok }
+    return { ...snapshot(state.lastRoot), ok, waitedMs: Date.now() - started, ready: ok }
   }
 
   function findWechatCli() {
