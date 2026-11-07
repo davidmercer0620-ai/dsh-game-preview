@@ -1,0 +1,183 @@
+# 交接说明 · dsh-game-preview v0.1
+
+这份文档是给你回家继续开发用的。读完应该能：装上、跑起来、知道代码在哪、知道哪里没做完、知道哪些坑我已经踩过。
+
+---
+
+## 1. 它是什么，现在到哪一步
+
+DSH 的**游戏预览面板**：右侧栏一个舞台，按引擎选最快的回路跑起来，改完不自动刷（脏计数 + 按需运行），并给 agent 三个工具让它自己拉起预览、看状态、停进程。
+
+**已验证（我在这台机器上跑过、有输出）**
+
+| 项 | 证据 |
+|---|---|
+| Host 控制 API 活着 | `:7317/api/hello` → `{ok:true,app:"dsh-game-preview",tools:3}` |
+| 三个工具进了模型工具表 | `Tool.listTools` 里能读到 `game_preview_run / status / stop` |
+| 静态 HTML 预览 | `/api/detect` → `static`，`/api/run` → URL，`/api/file` → 200 |
+| 真实 dev server 生命周期 | `npm run dev` 拉起 → 420ms 就绪 → stop 后端口关闭 |
+| Cocos / 微信 检测 | `cocos-web@http://localhost:7456`、`wechat`（缺 cli 时报可执行错误） |
+| Client 注册与渲染 | 离线 harness：tab 类型、两个槽位、iframe、脏标记全部命中 |
+
+**没验证（只能你看）**
+
+- 浏览器里 ▶ 图标真出没出、右侧栏面板长什么样。我没有浏览器控制能力。
+
+**没做（v0.2+）**
+
+- Godot / Unity 原生窗口捕获（设计已写：`docs/v0.2-window-capture.md`）
+- 暂停 / 单步 / 截图 / 录制回放
+- 微信 `miniprogram-automator`（现在只负责调起开发者工具）
+
+---
+
+## 2. 怎么装到另一台机器
+
+要求：DeepSeek Harness `0.2.x`，Node 22+。
+
+```powershell
+# 解压后，把绝对路径交给 DSH 的 agent，或直接在 UI 里 Plugins → Add → 本地目录
+plugin_manager install_bundle(target: "D:\\dsh-game-preview")
+```
+
+装完 **Ctrl+R 刷新页面**。标题栏右侧出现 ▶，右侧栏「+」里出现「游戏预览」。
+
+> 目录安装是**链接**安装：移动或删除目录后要重新装一次。
+
+---
+
+## 3. 目录结构
+
+```
+dsh-game-preview/
+├── package.json          # dsh.bundle.patch + dsh.client（platform/immediately/inject）
+├── cordis.patch.yml      # 插入一行插件，config: port / waitForMs / wechatCli / cocosEditor
+├── index.js              # Host：检测、进程、watch、控制 API、三个工具
+├── client.js             # Client：注册 tab 类型 + 面板组件 + 标题栏按钮
+├── locale/{en,zh}.json   # meta.title / meta.description（插件卡片显示用）
+├── icon.svg              # 自绘图标
+├── examples/catch-stars/ # 一个能跑的最小 HTML5 游戏，用来验收
+├── scripts/harness.mjs       # Host 桩测试（检测/启动/静态服务/脏计数/工具/进程树）
+├── scripts/client-harness.mjs# Client 冒烟测试（模块注册/槽位/渲染树断言）
+├── docs/v0.2-window-capture.md
+└── README.md
+```
+
+---
+
+## 4. 架构（两句话）
+
+- **Host** 自己起一个 `127.0.0.1:7317` 的 HTTP 控制服务，Client 通过探测 7317–7332 端口找到它。**没有用 DSH 的内部 RPC**，所以升级不易碎。
+- **Client** 向 `sidebarRightTabs` 注册一个 tab 类型，body 渲染进 `sidebar.right.pane.tab` 槽位；标题栏按钮注册进 `conversation.session.header.utilities`。
+
+两者唯一耦合是 HTTP + JSON，改一边不会炸另一边。
+
+---
+
+## 5. 我踩过的坑（省你几小时）
+
+**1. `ctx.tools` 默认不存在。**
+Host 插件要 `export const inject = ['tools']`，否则 `ctx.tools.register` 直接 TypeError。我当时用 try/catch 吞了异常，结果工具静默消失，查了很久。**教训：不要吞注册异常，至少 console 出来。**
+
+**2. 右侧栏不是"塞个 iframe"，是 tab 系统。**
+真正的注册路径（我是从已安装的 `dsh-context` 里反向读出来的，比文档快）：
+
+```js
+ctx.inject(['sidebarRightTabs'], (inner) => {
+  inner.sidebarRightTabs.register({ id, kind, title: () => '…', guide: [{ order, title, description }] })
+  inner.slots.inject('sidebar.right.pane.tab', () =>
+    inner.slots.register({ name: 'sidebar.right.pane.tab', key: id }, Body))
+})
+```
+
+打开面板：`ctx.get('sidebarRight').openTab(KIND)`。
+面板标题可另注册 `sidebar.right.pane.tab.title`（我不注册，用 open 时捕获的 title）。
+
+**3. 不要 import Harness 的 Client 包。**
+`@deepseek-ai/dsh-client-ui-primitives` 这类会随版本变；`dsh.client.inject` 里的条目只用来排序激活，不是可 import 的模块。控件自己写，样式只依赖 `--dsw-alias-*` token。
+
+**4. 权限：`ctx.get(name)` 比 `inject` 更宽容。**
+`webServer`、`sidebarRight` 这类我都是 `ctx.get()` + 判空，缺了不影响插件激活。
+
+**5. Windows 上杀进程要杀树。**
+`npm run dev` 是 cmd 的子进程，`child.kill()` 会留下孤儿 node 占着端口。用：
+```js
+execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => {})
+```
+
+**6. `fs.watch(recursive)` 会报目录事件。**
+同一次保存会给你 `src/game.js` 和 `src` 两条，必须 `statSync` 过滤目录，否则脏计数虚高。
+
+**7. DSH 装在 `app.asar` 里，ripgrep / glob 读不了。**
+只有 `read` 工具能读。要查包名，我是用 Node 手撕 asar 头的：
+
+```js
+// asar: [4][payloadSize][stringSize][pad] + JSON
+const hs = header.readUInt32LE(8)
+```
+
+**8. 控制 API 用自建 loopback，而不是 `ctx.webServer.register`。**
+后者我不知道确切 route 形状（`lib/types` 没随包发布），试错成本高。自建 HTTP 反而更稳：CORS 只回显 DSH 的 origin，自定义头 `x-game-preview` 强制预检。
+
+**9. 端口不能写死。**
+7317 被占时自动往后找 16 个；Client 依次探测，用 `/api/hello` 认领。所以同时装两个实例也不会抢端口失败。
+
+---
+
+## 6. 怎么跑测试
+
+```powershell
+node --check index.js
+node --check client.js
+node scripts/harness.mjs           # Host 全链路，约 5 秒
+node scripts/client-harness.mjs    # Client 注册 + 渲染，毫秒级
+```
+
+`harness.mjs` 里有五个场景：静态页、Cocos（超时文案）、微信（缺 cli 文案）、node-dev（真实拉起+停止）、脏计数。
+
+**改完 Host 要重装才生效**（模块已经 import 进进程了）：
+```
+plugin_manager remove_bundle(target: "dsh-game-preview")
+plugin_manager install_bundle(target: "<绝对路径>")
+```
+Client 只要刷新页面。
+
+---
+
+## 7. 下一步建议（按性价比）
+
+1. **先确认面板能画出来**（Ctrl+R → ▶ 图标）。这一步不过，别的都免谈。
+2. **发布**：`git remote add origin <空仓库>` + `git push -u origin main`。包名想改 scope 就现在改（`package.json` + `cordis.patch.yml` + `client.js` 里的 `id` 三处）。
+3. **v0.2 窗口捕获**：按 `docs/v0.2-window-capture.md` 拆的三个 PR 做，PR1（能看不能玩）就能单独发版。
+4. 微信 `miniprogram-automator`：先花半天实测小游戏到底能不能截图/执行脚本，**不通就别做**，降级成窗口捕获。
+
+---
+
+## 8. git 历史
+
+```
+5 个 commit，工作区干净
+1989873 docs: v0.2 native window capture design
+07cc051 fix: kill the whole dev-server process tree; test the real dev-server lifecycle
+7d84b30 feat: actionable Cocos start-up error and optional editor launch
+90cc40d test: client registration harness + engine detection fixtures
+e890ab5 feat: game preview panel for DeepSeek Harness (v0.1)
+```
+
+`.git` 在归档里，`git log` 可以直接看。
+
+---
+
+## 9. 排障
+
+| 现象 | 先查什么 |
+|---|---|
+| 面板「宿主未响应」 | Host 没激活：`curl http://127.0.0.1:7317/api/hello`；没响应就看插件是否 enabled |
+| 图标不出现 | F12 console 搜 `slot entry crashed`；那是 Client 组件抛错 |
+| 点了运行没反应 | 面板顶部有没有配置？没有就在输入框填项目目录点「检测」 |
+| 端口全被占 | 改 `cordis.patch.yml` 的 `port` |
+| 装了却没生效 | 目录安装是链接，改 Host 代码后要 remove + install |
+
+---
+
+有任何一步和文档不一致，以**代码**为准，文档可能落后。改动后麻烦顺手更新这一份。
