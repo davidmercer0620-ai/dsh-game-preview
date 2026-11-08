@@ -1490,6 +1490,19 @@ export function apply(ctx, config = {}) {
     /* -- native window capture ---------------------------------------- */
 
     // read-only introspection: which services this plugin can actually reach
+    if (path === '/api/debug' && url.searchParams.get('rebuild')) {
+      let rebuilt = null
+      try {
+        const cm = ctx.get('clientModules')
+        const id = url.searchParams.get('rebuild')
+        rebuilt = typeof cm?.rebuilt === 'function' ? Boolean(cm.rebuilt(id)) : 'unsupported'
+      } catch (error) {
+        rebuilt = String(error)
+      }
+      send(res, headers, { ok: true, rebuilt })
+      return
+    }
+
     if (path === '/api/debug') {
       let routeSelfTest = null
       try {
