@@ -536,7 +536,7 @@ window.__ModuleLoader__.load({
      * Native windows arrive either as one MJPEG <img> (loopback) or as polled
      * JPEG bytes (same-origin, where <img> cannot reach the control API).
      */
-    function WindowStage({ mode, fallbackUrl, reloadKey, alt, onError, interaction }) {
+    function WindowStage({ mode, fallbackUrl, reloadKey, alt, onError, interaction, imageRef }) {
       const live = mode === 'origin' || mode === 'bridge'
       const [src, setSrc] = useState(live ? null : fallbackUrl)
       useEffect(() => {
@@ -615,6 +615,7 @@ window.__ModuleLoader__.load({
       }
       return h('img', {
         className: 'gp-shot',
+        ref: imageRef,
         src: src ?? undefined,
         alt: alt ?? 'game window',
         onError,
@@ -705,7 +706,7 @@ window.__ModuleLoader__.load({
      * Native windows arrive either as one MJPEG <img> (loopback) or as polled
      * JPEG bytes (same-origin, where <img> cannot reach the control API).
      */
-    function WindowStage({ mode, fallbackUrl, reloadKey, alt, onError, interaction }) {
+    function WindowStage({ mode, fallbackUrl, reloadKey, alt, onError, interaction, imageRef }) {
       const isOrigin = mode === 'origin'
       const [src, setSrc] = useState(isOrigin ? null : fallbackUrl)
       useEffect(() => {
@@ -751,6 +752,7 @@ window.__ModuleLoader__.load({
       }
       return h('img', {
         className: 'gp-shot',
+        ref: imageRef,
         src: src ?? undefined,
         alt: alt ?? 'game window',
         onError,
@@ -923,6 +925,12 @@ window.__ModuleLoader__.load({
         setBusy(true)
         setError(null)
         try {
+          if (configId) window.localStorage.setItem(`dsh-game-preview.config:${snap?.root ?? ''}`, configId)
+        } catch {}
+        try {
+          if (configId && /-native$/.test(String(configId))) window.localStorage.removeItem('dsh-game-preview.window')
+        } catch {}
+        try {
           const next = await call('/api/run', {
             method: 'POST',
             body: JSON.stringify({ configId, url: manualUrl || undefined }),
@@ -935,7 +943,7 @@ window.__ModuleLoader__.load({
         } finally {
           setBusy(false)
         }
-      }, [manualUrl])
+      }, [manualUrl, snap?.root])
 
       const reconnect = useCallback(async () => {
         endpoint = null
@@ -1004,6 +1012,33 @@ window.__ModuleLoader__.load({
         }
       }, [])
 
+      const imageRef = useRef(null)
+
+      const saveShot = useCallback(async () => {
+        const img = imageRef.current
+        if (!img || !img.src) {
+          setError('还没有画面可以导出')
+          return
+        }
+        try {
+          if (!img.src.startsWith('blob:')) {
+            setError('当前传输方式不支持导出画面（外部打开后用系统截图）')
+            return
+          }
+          const blob = await (await fetch(img.src)).blob()
+          const url = URL.createObjectURL(blob)
+          const a = document.createElement('a')
+          a.href = url
+          a.download = `game-preview-${new Date().toISOString().replace(/[:.]/g, '-')}.jpg`
+          document.body.appendChild(a)
+          a.click()
+          a.remove()
+          setTimeout(() => URL.revokeObjectURL(url), 5000)
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        }
+      }, [])
+
       const lastMove = useRef(0)
       const sendInput = useCallback((event) => {
         const now = Date.now()
@@ -1012,6 +1047,27 @@ window.__ModuleLoader__.load({
         // fire and forget: input must not queue behind a slow request
         void call('/api/input', { method: 'POST', body: JSON.stringify(event) }).catch(() => {})
       }, [])
+
+      useEffect(() => {
+        const onHotkey = (event) => {
+          const tag = String(event.target?.tagName ?? '').toLowerCase()
+          if (tag === 'input' || tag === 'textarea' || event.target?.isContentEditable) return
+          if (event.key === 'Escape') {
+            if (pointerMode) { setPointerMode(false); return }
+            if (immersive) setImmersive(false)
+            return
+          }
+          if (event.key === 'f' || event.key === 'F') {
+            if (!pointerMode) setImmersive((on) => !on)
+            return
+          }
+          if ((event.key === 'r' || event.key === 'R') && !pointerMode) {
+            setReloadKey((n) => n + 1)
+          }
+        }
+        window.addEventListener('keydown', onHotkey)
+        return () => window.removeEventListener('keydown', onHotkey)
+      }, [pointerMode, immersive])
 
       useEffect(() => {
         if (!pointerMode) return undefined
@@ -1054,6 +1110,9 @@ window.__ModuleLoader__.load({
             method: 'POST',
             body: JSON.stringify({ hwnd, options: { fps: preset.fps, maxWidth: preset.maxWidth, quality: preset.quality } }),
           })
+          try {
+            window.localStorage.setItem('dsh-game-preview.window', JSON.stringify({ title: next?.active?.windowTitle ?? '' }))
+          } catch {}
           setSnap(next)
           setWindows(null)
           setReloadKey((n) => n + 1)
@@ -1089,7 +1148,40 @@ window.__ModuleLoader__.load({
         return 9
       }
       const ordered = [...configs].sort((a, b) => rankOf(a) - rankOf(b))
-      const primaryCfg = active ? (configs.find((c) => c.id === active.id) ?? ordered[0]) : ordered[0]
+      const lastUsed = (() => {
+        try {
+          const saved = String(window.localStorage.getItem(`dsh-game-preview.config:${snap?.root ?? ''}`) ?? '')
+          return configs.find((c) => c.id === saved) ?? null
+        } catch {
+          return null
+        }
+      })()
+      const primaryCfg = active
+        ? (configs.find((c) => c.id === active.id) ?? ordered[0])
+        : (lastUsed ?? ordered[0])
+
+      // reopen the last captured window instead of making the user pick again
+      const restoreWindow = useCallback(async () => {
+        let saved = null
+        try {
+          saved = JSON.parse(window.localStorage.getItem('dsh-game-preview.window') ?? 'null')
+        } catch {}
+        if (!saved?.title) return false
+        try {
+          const preset = QUALITY[quality]
+          const next = await call('/api/window/attach', {
+            method: 'POST',
+            body: JSON.stringify({ title: saved.title, options: { fps: preset.fps, maxWidth: preset.maxWidth, quality: preset.quality } }),
+          })
+          setSnap(next)
+          return true
+        } catch {
+          try {
+            window.localStorage.removeItem('dsh-game-preview.window')
+          } catch {}
+          return false
+        }
+      }, [quality])
 
       const switchQuality = useCallback(async (next) => {
         setQualityState(next)
@@ -1224,6 +1316,7 @@ window.__ModuleLoader__.load({
                         alt: active?.windowTitle ?? 'game window',
                         onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
                         interaction: { enabled: pointerMode, send: sendInput },
+                        imageRef,
                       })))
                 : h(DeviceFrame, { viewport },
                     h(WindowStage, {
@@ -1234,6 +1327,7 @@ window.__ModuleLoader__.load({
                       alt: active?.windowTitle ?? 'game window',
                       onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
                       interaction: { enabled: pointerMode, send: sendInput },
+                      imageRef,
                     })),
               crop.mode
                 ? h(CropOverlay, {
@@ -1309,14 +1403,16 @@ window.__ModuleLoader__.load({
 
       const autoRan = useRef(false)
       useEffect(() => {
-        if (autoRan.current || !snap || active || !primaryCfg) return
-        if (primaryCfg.kind === 'manual' || primaryCfg.missing) return
+        if (autoRan.current || !snap || active) return
         try {
           if (window.localStorage.getItem('dsh-game-preview.autoRun') === '0') return
         } catch {}
         autoRan.current = true
-        void run(primaryCfg.id)
-      }, [snap, active, primaryCfg, run])
+        void (async () => {
+          if (await restoreWindow()) return
+          if (primaryCfg && primaryCfg.kind !== 'manual' && !primaryCfg.missing) void run(primaryCfg.id)
+        })()
+      }, [snap, active, primaryCfg, run, restoreWindow])
 
       return h('div', { className: 'gp-root' },
         useStyles(),
@@ -1395,6 +1491,9 @@ window.__ModuleLoader__.load({
             : null,
           isWindow && crop.rect
             ? h('button', { className: 'gp-btn', title: '恢复整个窗口', onClick: () => saveCrop(null) }, '全窗')
+            : null,
+          isWindow
+            ? h('button', { className: 'gp-btn', title: '把当前画面存成 JPG', onClick: () => void saveShot() }, '⤓ 截图')
             : null,
           h('button', { className: 'gp-btn', title: '隐藏所有控件，画面铺满', onClick: () => { setViewport('auto'); setImmersive(true) } }, '⛶ 满屏'),
           h('button', { className: 'gp-btn', disabled: !url, onClick: () => url && window.open(url, '_blank', 'noopener') }, '↗ 外部')),
