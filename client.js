@@ -116,7 +116,88 @@ window.__ModuleLoader__.load({
       return withTimeout(work, timeoutMs, `${via} ${target.slice(0, 40)}`)
     }
 
+
+    /* -------------------------------------------------------- iframe bridge */
+
+    // The shell patches fetch/XHR in the top frame only. A hidden iframe served
+    // by the loopback Host talks to it natively, and postMessage carries JSON.
+    const bridge = { frame: null, port: null, ready: null, waiters: new Map(), seq: 0 }
+
+    try {
+      window.addEventListener('message', (event) => {
+        const data = event.data
+        if (!data || typeof data !== 'object') return
+        if (data.__gp === 'ready') {
+          if (bridge.ready) {
+            bridge.ready.resolve()
+            bridge.ready = null
+          }
+          return
+        }
+        if (data.__gp === 'res') {
+          const waiter = bridge.waiters.get(data.id)
+          if (waiter) {
+            bridge.waiters.delete(data.id)
+            waiter(data)
+          }
+        }
+      })
+    } catch {}
+
+    function connectBridge(port, timeoutMs = 2000) {
+      if (bridge.frame && bridge.port === port) return Promise.resolve(true)
+      const frame = document.createElement('iframe')
+      frame.setAttribute('aria-hidden', 'true')
+      frame.style.cssText = 'position:absolute;width:0;height:0;border:0;visibility:hidden'
+      frame.src = `http://127.0.0.1:${port}/bridge?t=${Date.now()}`
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          bridge.ready = null
+          reject(new Error(`bridge :${port} 握手超时`))
+        }, timeoutMs)
+        bridge.ready = {
+          resolve: () => {
+            clearTimeout(timer)
+            bridge.frame = frame
+            bridge.port = port
+            resolve(true)
+          },
+        }
+        try {
+          document.body.appendChild(frame)
+        } catch {
+          clearTimeout(timer)
+          reject(new Error('无法插入 bridge iframe'))
+        }
+      })
+    }
+
+    function bridgeCall(path, init = {}, timeoutMs = 4000) {
+      if (!bridge.frame || !bridge.port) return Promise.reject(new Error('bridge 未连接'))
+      const id = ++bridge.seq
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => {
+          bridge.waiters.delete(id)
+          reject(new Error(`bridge 超时 ${timeoutMs}ms`))
+        }, timeoutMs)
+        bridge.waiters.set(id, (data) => {
+          clearTimeout(timer)
+          if (data.error) reject(new Error(data.error))
+          else if (data.status >= 200 && data.status < 300) resolve(data.json ?? {})
+          else reject(new Error(data.json?.error ?? `HTTP ${data.status}`))
+        })
+        bridge.frame.contentWindow.postMessage(
+          { __gp: 'req', id, path, method: init.method ?? 'GET', body: init.body === undefined ? undefined : JSON.parse(init.body) },
+          '*',
+        )
+      })
+    }
+
     async function httpJson(url, init = {}) {
+      if (transport === 'bridge') {
+        const apiPath = String(url).replace(/^https?:\/\/127\.0\.0\.1:\d+/, '')
+        return bridgeCall(apiPath, init)
+      }
       if (transport === 'xhr') {
         const res = await xhrJson(url, init)
         if (!res.ok) throw new Error(res.body?.error ?? `HTTP ${res.status}`)
@@ -147,6 +228,22 @@ window.__ModuleLoader__.load({
           return null
         }
       })()
+
+      // The iframe bridge is first: it is the only channel the shell cannot patch.
+      for (const port of PORTS.slice(0, 4)) {
+        try {
+          await connectBridge(port, 1600)
+          const body = await bridgeCall('/api/hello', {}, 2000)
+          if (body?.app === APP) {
+            endpoint = `http://127.0.0.1:${port}/api`
+            transport = 'bridge'
+            health = { port, version: body.version ?? null, error: null, mode: 'bridge' }
+            return endpoint
+          }
+        } catch (error) {
+          health.lastBridgeNote = String(error?.message ?? error).slice(0, 60)
+        }
+      }
 
       const deadline = 1500
       const candidates = [
@@ -195,7 +292,7 @@ window.__ModuleLoader__.load({
         version: null,
         error: '宿主未响应：所有传输都没通',
         mode: null,
-        attempts: notes.slice(0, 8),
+        attempts: [...(health.lastBridgeNote ? [`bridge → ${health.lastBridgeNote}`] : []), ...notes].slice(0, 8),
       }
       return null
     }
@@ -692,7 +789,9 @@ window.__ModuleLoader__.load({
         picker,
         h('div', { className: 'gp-health' },
           health.mode
-            ? `宿主 v${health.version ?? '?'} · ${health.mode === 'origin' ? '同源' : ':' + health.port}${transport === 'xhr' ? '(xhr)' : ''}${snap?.root ? ' · ' + snap.root : ''}`
+            ? `宿主 v${health.version ?? '?'} · ${
+                health.mode === 'origin' ? '同源' : health.mode === 'bridge' ? `:${health.port}(iframe桥)` : ':' + health.port
+              }${snap?.root ? ' · ' + snap.root : ''}`
             : (health.error ?? '正在连接宿主…'),
           h('button', { className: 'gp-btn', disabled: busy, onClick: () => void reconnect() }, '重新连接')),
         error ? h('div', { className: 'gp-err' }, error) : null,

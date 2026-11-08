@@ -187,6 +187,40 @@ function nativeLaunch(cfg, config, root) {
   return { error: `未知的原生引擎：${cfg.engine}` }
 }
 
+
+/* ------------------------------------------------------------- iframe bridge */
+
+/**
+ * The desktop shell intercepts fetch/XHR in the top frame, but a cross-origin
+ * iframe it embeds talks to the network normally. This page runs on the
+ * loopback origin, so the panel can drive it with postMessage and get JSON back.
+ */
+const BRIDGE_HTML = `<!doctype html><meta charset="utf-8"><title>game-preview bridge</title>
+<script>
+(function () {
+  var ALLOWED = /^\\/api\\//;
+  function reply(source, payload) { try { source.postMessage(payload, '*') } catch (e) {} }
+  window.addEventListener('message', function (event) {
+    var msg = event.data;
+    if (!msg || typeof msg !== 'object' || msg.__gp !== 'req') return;
+    var id = msg.id, path = String(msg.path || '');
+    if (!ALLOWED.test(path)) { reply(event.source, { __gp: 'res', id: id, status: 0, error: 'path not allowed' }); return }
+    var init = { method: msg.method || 'GET', headers: { 'x-game-preview': '1' } };
+    if (msg.body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(msg.body) }
+    fetch(path, init).then(function (res) {
+      return res.text().then(function (text) {
+        var json = null;
+        try { json = JSON.parse(text) } catch (e) {}
+        reply(event.source, { __gp: 'res', id: id, status: res.status, json: json, text: json ? undefined : text.slice(0, 400) });
+      });
+    }).catch(function (err) {
+      reply(event.source, { __gp: 'res', id: id, status: 0, error: String(err && err.message ? err.message : err) });
+    });
+  });
+  if (window.parent !== window) window.parent.postMessage({ __gp: 'ready' }, '*');
+})();
+</script>`
+
 /* ------------------------------------------------------------- html bundle */
 
 const BUNDLE_MAX_BYTES = 12 * 1024 * 1024
@@ -933,6 +967,16 @@ export function apply(ctx, config = {}) {
         ua: String(req.headers['user-agent'] ?? '').slice(-60),
       })
       if (requestLog.length > 40) requestLog.shift()
+    }
+
+    if (path === '/bridge') {
+      res.writeHead(200, {
+        'content-type': 'text/html; charset=utf-8',
+        'cache-control': 'no-store',
+        'access-control-allow-origin': headers['access-control-allow-origin'],
+      })
+      res.end(BRIDGE_HTML)
+      return
     }
 
     if (path === '/api/hello') {
