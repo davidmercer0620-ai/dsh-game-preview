@@ -107,11 +107,15 @@ function walk(node, visit) {
   if (!node || typeof node !== 'object') return
   visit(node)
   if (typeof node.type === 'function') {
-    // render the nested component once so its markup is part of the tree
+    // render the nested component once so its markup is part of the tree,
+    // passing children the way React does
+    const props = { ...(node.props ?? {}) }
+    if (node.children?.length) props.children = node.children.length === 1 ? node.children[0] : node.children
     let rendered = null
     try {
-      rendered = node.type(node.props ?? {})
-    } catch {
+      rendered = node.type(props)
+    } catch (error) {
+      if (process.env.DSH_DEBUG_HARNESS) console.error('[walk] component threw:', node.type?.name, String(error?.message ?? error))
       rendered = null
     }
     if (rendered) walk(rendered, visit)
@@ -203,9 +207,20 @@ if (viewportLabels.length !== 3) throw new Error('expected 自适应 / PC / 手�
 
 const vpBoxes = []
 walk(windowTree, (n) => {
-  if (typeof n.props?.className === 'string' && n.props.className === 'gp-vp') vpBoxes.push(n.props['data-vp'])
+  if (typeof n.props?.className === 'string' && n.props.className === 'gp-device') vpBoxes.push(n.props['data-vp'])
 })
 if (vpBoxes[0] !== 'auto') throw new Error('stage box did not follow the auto viewport: ' + vpBoxes[0])
+
+// a phone preview must be a 390x844 logical viewport, not a stretched box
+react.__states = [windowSnap, null, false, 0, 'mobile', '', '', '', false, null, null, false]
+const phoneTree = body.component({})
+const screens = []
+walk(phoneTree, (n) => {
+  if (typeof n.props?.className === 'string' && n.props.className.includes('gp-device-screen')) screens.push(n.props)
+})
+const phoneScreen = screens.find((p) => p.style?.width === 390)
+if (!phoneScreen) throw new Error('phone mode rendered no 390px-wide device screen')
+if (phoneScreen.style.height !== 844) throw new Error('phone device screen must be 390x844, got ' + JSON.stringify(phoneScreen.style))
 
 const pickerTreeForVp = body.component({})
 void pickerTreeForVp

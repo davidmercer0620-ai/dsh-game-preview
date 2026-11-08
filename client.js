@@ -329,10 +329,13 @@ window.__ModuleLoader__.load({
       .gp-chip-select{appearance:none;padding-right:18px;background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
         background-position:calc(100% - 9px) 50%,calc(100% - 5px) 50%;background-size:4px 4px,4px 4px;background-repeat:no-repeat}
       .gp-stage{position:relative;flex:1;min-height:0;display:flex;align-items:stretch;justify-content:center;background:color-mix(in srgb, currentColor 4%, transparent);overflow:hidden}
-      .gp-vp{display:flex;align-items:center;justify-content:center;width:100%;height:100%;padding:10px;box-sizing:border-box;min-height:0}
-      .gp-vp[data-vp="pc"] .gp-frame{height:100%;width:auto;aspect-ratio:16 / 9;max-width:100%;border-radius:8px;box-shadow:0 0 0 1px color-mix(in srgb, currentColor 18%, transparent)}
-      .gp-vp[data-vp="mobile"] .gp-frame{width:min(100%,390px);height:auto;aspect-ratio:390 / 844;max-height:100%;border-radius:18px;box-shadow:0 0 0 1px color-mix(in srgb, currentColor 22%, transparent), 0 10px 30px rgba(0,0,0,.35)}
-      .gp-vp[data-vp="pc"] .gp-shot,.gp-vp[data-vp="mobile"] .gp-shot{border-radius:8px}
+      .gp-device{position:relative;display:flex;align-items:center;justify-content:center;width:100%;height:100%;overflow:hidden}
+      .gp-device-screen{flex:none;transform-origin:center center;overflow:hidden;background:#000;
+        box-shadow:0 0 0 1px color-mix(in srgb, currentColor 20%, transparent), 0 12px 34px rgba(0,0,0,.35)}
+      .gp-device[data-vp="pc"] .gp-device-screen{border-radius:10px}
+      .gp-device[data-vp="mobile"] .gp-device-screen{border-radius:26px;box-shadow:0 0 0 8px #1b1d22, 0 0 0 9px color-mix(in srgb, currentColor 22%, transparent), 0 18px 42px rgba(0,0,0,.45)}
+      .gp-device-fluid{width:100%!important;height:100%!important;transform:none!important;box-shadow:none;border-radius:0}
+      .gp-device-tag{position:absolute;bottom:6px;right:10px;font-size:10px;opacity:.5;pointer-events:none}
       .gp-frame{width:100%;height:100%;border:0;background:#000;display:block}
       .gp-shot{width:100%;height:100%;object-fit:contain;background:#000;display:block;image-rendering:auto}
       .gp-live{position:absolute;left:8px;top:8px;display:flex;gap:6px;align-items:center;pointer-events:none;font-size:10px}
@@ -357,7 +360,7 @@ window.__ModuleLoader__.load({
       .gp-attempts{font-size:10px;opacity:.65;padding:2px 10px 6px;line-height:1.6;word-break:break-all;max-height:110px;overflow:auto}
       .gp-root[data-immersive="1"]{position:relative}
       .gp-root[data-immersive="1"] .gp-stage{padding:0}
-      .gp-root[data-immersive="1"] .gp-vp{padding:0}
+      .gp-root[data-immersive="1"] .gp-device{padding:0}
       .gp-root[data-immersive="1"] .gp-frame,.gp-root[data-immersive="1"] .gp-shot{border-radius:0}
       .gp-exit-full{position:absolute;right:10px;top:10px;z-index:5;font-size:11px;padding:3px 10px;border-radius:999px;
         border:1px solid rgba(255,255,255,.25);background:rgba(12,12,14,.62);color:#eee;cursor:pointer;backdrop-filter:blur(4px)}
@@ -370,6 +373,56 @@ window.__ModuleLoader__.load({
     function useStyles() {
       // returns a style element rendered inside the panel so unmounting removes it
       return h('style', { 'data-game-preview': '1' }, css)
+    }
+
+    /* -------------------------------------------------------- device frame */
+
+    /**
+     * A phone preview must be a 390x844 *logical* viewport, or the game's media
+     * queries never see a phone. The frame keeps that size and scales the whole
+     * thing down to fit whatever space the sidebar gives it.
+     */
+    function DeviceFrame({ viewport, children }) {
+      const hostRef = useRef(null)
+      const preset = VIEWPORTS[viewport]?.width ? VIEWPORTS[viewport] : null
+      const [scale, setScale] = useState(1)
+
+      useEffect(() => {
+        const host = hostRef.current
+        if (!host || !preset) {
+          setScale(1)
+          return undefined
+        }
+        const fit = () => {
+          const rect = host.getBoundingClientRect()
+          if (!rect.width || !rect.height) return
+          const next = Math.min(1, (rect.width - 12) / preset.width, (rect.height - 12) / preset.height)
+          setScale(Math.max(0.1, Math.round(next * 1000) / 1000))
+        }
+        fit()
+        let observer = null
+        try {
+          observer = new ResizeObserver(fit)
+          observer.observe(host)
+        } catch {
+          window.addEventListener('resize', fit)
+        }
+        return () => {
+          if (observer) observer.disconnect()
+          else window.removeEventListener('resize', fit)
+        }
+      }, [preset, viewport])
+
+      const inner = preset
+        ? h('div', {
+            className: 'gp-device-screen',
+            style: { width: preset.width, height: preset.height, transform: `scale(${scale})` },
+          }, children)
+        : h('div', { className: 'gp-device-screen gp-device-fluid' }, children)
+
+      return h('div', { className: 'gp-device', 'data-vp': viewport, ref: hostRef },
+        inner,
+        preset ? h('span', { className: 'gp-device-tag' }, `${preset.width}×${preset.height} · ${Math.round(scale * 100)}%`) : null)
     }
 
     /* ------------------------------------------------------- window stage */
@@ -759,7 +812,7 @@ window.__ModuleLoader__.load({
       const stage = url
         ? isWindow
           ? h('div', { className: 'gp-stage' },
-              h('div', { className: 'gp-vp', 'data-vp': viewport },
+              h(DeviceFrame, { viewport },
                 h(WindowStage, {
                   key: `${url}#${reloadKey}`,
                   mode: health.mode,
@@ -770,7 +823,7 @@ window.__ModuleLoader__.load({
                 })),
               liveBadges.length ? h('div', { className: 'gp-live' }, liveBadges) : null)
           : h('div', { className: 'gp-stage' },
-              h('div', { className: 'gp-vp', 'data-vp': viewport },
+              h(DeviceFrame, { viewport },
                 h(GameStage, {
                   bundlePath: active?.bundlePath,
                   fallbackUrl: url,
