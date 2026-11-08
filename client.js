@@ -57,6 +57,54 @@ window.__ModuleLoader__.load({
       }
     })()
 
+    /* ------------------------------------------------------------ transport */
+
+    // The desktop shell patches window.fetch and only forwards same-origin
+    // "/api" calls, so a loopback fetch never leaves the page. XMLHttpRequest
+    // is not patched, which gives us a second way to reach the same server.
+    function xhrJson(url, init = {}) {
+      return new Promise((resolve, reject) => {
+        try {
+          const xhr = new XMLHttpRequest()
+          xhr.open(init.method ?? 'GET', url, true)
+          xhr.setRequestHeader('x-game-preview', '1')
+          if (init.body) xhr.setRequestHeader('content-type', 'application/json')
+          xhr.timeout = 8000
+          xhr.onload = () => {
+            let body = {}
+            try {
+              body = xhr.responseText ? JSON.parse(xhr.responseText) : {}
+            } catch {
+              body = {}
+            }
+            resolve({ ok: xhr.status >= 200 && xhr.status < 300, status: xhr.status, body })
+          }
+          xhr.onerror = () => reject(new Error('XHR 网络错误'))
+          xhr.ontimeout = () => reject(new Error('XHR 超时'))
+          xhr.send(init.body ?? null)
+        } catch (error) {
+          reject(error)
+        }
+      })
+    }
+
+    async function httpJson(url, init = {}) {
+      if (transport === 'xhr') {
+        const res = await xhrJson(url, init)
+        if (!res.ok) throw new Error(res.body?.error ?? `HTTP ${res.status}`)
+        return res.body
+      }
+      const res = await fetch(url, {
+        ...init,
+        headers: { 'content-type': 'application/json', 'x-game-preview': '1', ...(init.headers ?? {}) },
+      })
+      const body = await res.json().catch(() => ({}))
+      if (!res.ok || body.ok === false) throw new Error(body.error ?? `HTTP ${res.status}`)
+      return body
+    }
+
+    let transport = 'fetch'
+
     async function probe() {
       if (endpoint) return endpoint
 
@@ -72,39 +120,41 @@ window.__ModuleLoader__.load({
       } catch {}
       const originNotes = []
       for (const target of originAttempts) {
-        try {
-          const res = await fetch(target, { headers: { 'x-game-preview': '1' } })
-          if (res.ok) {
-            const body = await res.json()
+        for (const via of ['fetch', 'xhr']) {
+          try {
+            const body = via === 'xhr'
+              ? (await xhrJson(target)).body
+              : await (await fetch(target, { headers: { 'x-game-preview': '1' } })).json()
             if (body?.app === APP) {
               endpoint = API
+              transport = via
               health = { port: null, version: body.version ?? null, error: null, mode: 'origin' }
               return endpoint
             }
-            originNotes.push(`${target} → app=${body?.app ?? '?'}`)
-          } else {
-            originNotes.push(`${target} → HTTP ${res.status}`)
+            originNotes.push(`${target}[${via}] → app=${body?.app ?? '?'}`)
+          } catch (error) {
+            originNotes.push(`${target}[${via}] → ${String(error?.message ?? error).slice(0, 50)}`)
           }
-        } catch (error) {
-          originNotes.push(`${target} → ${String(error?.message ?? error).slice(0, 60)}`)
         }
       }
 
       // 2) the loopback control API (web GUI without the same-origin bridge)
       for (const port of PORTS) {
-        try {
-          const res = await fetch(`http://127.0.0.1:${port}/api/hello`, {
-            headers: { 'x-game-preview': '1' },
-          })
-          if (!res.ok) continue
-          const body = await res.json()
-          if (body?.app === APP) {
-            endpoint = `http://127.0.0.1:${port}/api`
-            health = { port, version: body.version ?? null, error: null, mode: 'loopback' }
-            return endpoint
+        for (const via of ['fetch', 'xhr']) {
+          try {
+            const url = `http://127.0.0.1:${port}/api/hello`
+            const body = via === 'xhr'
+              ? (await xhrJson(url)).body
+              : await (await fetch(url, { headers: { 'x-game-preview': '1' } })).json()
+            if (body?.app === APP) {
+              endpoint = `http://127.0.0.1:${port}/api`
+              transport = via
+              health = { port, version: body.version ?? null, error: null, mode: 'loopback' }
+              return endpoint
+            }
+          } catch {
+            /* try the next transport / port */
           }
-        } catch {
-          /* port closed, keep probing */
         }
       }
       return null
@@ -125,13 +175,7 @@ window.__ModuleLoader__.load({
         }
         throw new Error('宿主未响应：预览服务没有启动')
       }
-      const res = await fetch(base + rel, {
-        ...init,
-        headers: { 'content-type': 'application/json', 'x-game-preview': '1', ...(init.headers ?? {}) },
-      })
-      const body = await res.json().catch(() => ({}))
-      if (!res.ok || body.ok === false) throw new Error(body.error ?? `HTTP ${res.status}`)
-      return body
+      return httpJson(base + rel, init)
     }
 
     /* ------------------------------------------------------------ styles */
@@ -290,6 +334,7 @@ window.__ModuleLoader__.load({
       const [roots, setRoots] = useState(null)
       const [winBusy, setWinBusy] = useState(false)
       const alive = useRef(true)
+      const reported = useRef(false)
 
       const setViewport = useCallback((next) => {
         setViewportState(next)
@@ -298,20 +343,52 @@ window.__ModuleLoader__.load({
         } catch {}
       }, [])
 
+      const reportEnv = useCallback(async (note) => {
+        try {
+          const loc = window.location
+          await fetch(`${API}/report`, {
+            method: 'POST',
+            headers: { 'content-type': 'application/json', 'x-game-preview': '1' },
+            body: JSON.stringify({
+              note,
+              href: String(loc?.href ?? '').slice(0, 300),
+              origin: String(loc?.origin ?? ''),
+              protocol: String(loc?.protocol ?? ''),
+              mode: health.mode,
+              transport,
+              port: health.port,
+              version: health.version,
+              error: health.error,
+              ua: String(navigator?.userAgent ?? '').slice(0, 160),
+            }),
+          })
+        } catch {}
+      }, [])
+
       const refresh = useCallback(async () => {
         const query = []
         if (rootOverride) query.push(`root=${encodeURIComponent(rootOverride)}`)
         else if (SESSION_ID) query.push(`session=${encodeURIComponent(SESSION_ID)}`)
         try {
+          if (!reported.current) {
+            reported.current = true
+            void reportEnv('first-state')
+          }
           const next = await call('/api/state' + (query.length ? `?${query.join('&')}` : ''))
           if (alive.current) {
             setSnap(next)
             setError(null)
           }
         } catch (err) {
-          if (alive.current) setError(String(err?.message ?? err))
+          if (alive.current) {
+            setError(String(err?.message ?? err))
+            if (!reported.current) {
+              reported.current = true
+              void reportEnv('first-state-failed')
+            }
+          }
         }
-      }, [rootOverride])
+      }, [rootOverride, reportEnv])
 
       useEffect(() => {
         alive.current = true
@@ -583,7 +660,7 @@ window.__ModuleLoader__.load({
         picker,
         h('div', { className: 'gp-health' },
           health.mode
-            ? `宿主 v${health.version ?? '?'} · ${health.mode === 'origin' ? '同源' : ':' + health.port}${snap?.root ? ' · ' + snap.root : ''}`
+            ? `宿主 v${health.version ?? '?'} · ${health.mode === 'origin' ? '同源' : ':' + health.port}${transport === 'xhr' ? '(xhr)' : ''}${snap?.root ? ' · ' + snap.root : ''}`
             : (health.error ?? '正在连接宿主…'),
           h('button', { className: 'gp-btn', disabled: busy, onClick: () => void reconnect() }, '重新连接')),
         error ? h('div', { className: 'gp-err' }, error) : null,

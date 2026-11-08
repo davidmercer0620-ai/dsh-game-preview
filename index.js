@@ -828,6 +828,8 @@ export function apply(ctx, config = {}) {
 
   function originAllowed(origin) {
     if (!origin) return true // same-origin / non-browser callers (curl, the agent)
+    // a desktop page loaded from file:// sends the literal origin "null"
+    if (origin === 'null') return true
     if (allowedOrigins().has(origin)) return true
     // the panel itself is served from the DSH web origin, which is always loopback
     return LOOPBACK_ORIGIN.test(origin)
@@ -1075,6 +1077,7 @@ export function apply(ctx, config = {}) {
         fetchRoutePaths: [...routePaths],
         sameOrigin: Boolean(ctx.get('connection')?.fetch?.register),
         routeSelfTest,
+        lastReport: state.lastReport ?? null,
         lastRequests: requestLog.slice(-15),
       })
       return
@@ -1535,8 +1538,21 @@ export function apply(ctx, config = {}) {
     if (typeof register !== 'function') return
 
     const add = (path, methods, fetch, requestBody) => {
+      const logged = async (request) => {
+        try {
+          requestLog.push({
+            at: Date.now(),
+            path,
+            query: String(request?.url ?? '').replace(/^[^?]*/, '').slice(0, 200),
+            origin: `bridge:${request?.headers?.get?.('referer') ?? ''}`.slice(0, 120),
+            ua: '',
+          })
+          if (requestLog.length > 40) requestLog.shift()
+        } catch {}
+        return fetch(request)
+      }
       try {
-        const route = { path, methods, requestBody: requestBody ?? 'buffered', fetch }
+        const route = { path, methods, requestBody: requestBody ?? 'buffered', fetch: logged }
         fetchRoutes.push(register.call(connection.fetch, route))
         routePaths.add(path)
       } catch (error) {
@@ -1640,6 +1656,15 @@ export function apply(ctx, config = {}) {
         headers: { 'content-type': 'image/jpeg', 'cache-control': 'no-store', 'x-frame-seq': String(frame.seq) },
       })
     })
+
+    add(`${API_PREFIX}/report`, ['POST'], async (request) => {
+      try {
+        state.lastReport = { at: Date.now(), ...(await request.json()) }
+      } catch {
+        state.lastReport = { at: Date.now(), error: 'unreadable body' }
+      }
+      return jsonResponse({ ok: true })
+    }, 'buffered')
 
     add(`${API_PREFIX}/bundle`, ['GET'], (request) => {
       const params = urlOf(request, originOf())
