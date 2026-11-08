@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.5.15'
+    const CLIENT_BUILD = '0.5.16'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -1752,6 +1752,29 @@ window.__ModuleLoader__.load({
         h('path', { d: 'M10 10l4.5 2.5L10 15z', fill: 'currentColor' })))
     }
 
+    /* --------------------------------------------------------- error report */
+
+    function reportClientError(kind, error) {
+      const text = String(error?.stack ?? error?.message ?? error)
+      try {
+        void fetch(`${API}/report`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', 'x-game-preview': '1' },
+          body: JSON.stringify({
+            note: kind,
+            error: text.slice(0, 1200),
+            build: CLIENT_BUILD,
+            href: String(window.location?.href ?? ''),
+          }),
+        }).catch(() => {})
+      } catch {}
+    }
+
+    try {
+      window.addEventListener('error', (event) => reportClientError('window-error', event?.error ?? event?.message))
+      window.addEventListener('unhandledrejection', (event) => reportClientError('unhandled-rejection', event?.reason))
+    } catch {}
+
     /* ------------------------------------------------------------ resilience */
 
     const ReactComponent = React.Component ?? class { constructor(props) { this.props = props } }
@@ -1768,6 +1791,7 @@ window.__ModuleLoader__.load({
         try {
           console.error('[game-preview] panel crashed', error, info)
         } catch {}
+        reportClientError('panel-crash', error)
       }
       render() {
         if (!this.state.error) return this.props.children
@@ -1795,6 +1819,7 @@ window.__ModuleLoader__.load({
           register(ctx)
         } catch (error) {
           applyError = String(error?.stack ?? error)
+          reportClientError('apply-failed', error)
           try {
             console.error('[game-preview] apply failed', error)
           } catch {}
