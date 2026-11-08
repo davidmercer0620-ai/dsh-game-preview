@@ -12,12 +12,17 @@
 | 右侧栏舞台 | 会话旁边一个可拖宽的预览面板，Web 预览支持 100% / 768px / 375px 三档宽 |
 | 运行配置自动检测 | 扫工作区**和一层子目录**识别 Cocos Creator、微信小游戏、Godot、Unity、Node dev server（dev/start/serve/preview）、静态 HTML |
 | 自动定位工作区 | 面板没有会话上下文时，Host 从活着的 Agent 借当前工作目录；多个会话时标题栏的 `📁` 可切换 |
-| **原生窗口捕获（v0.2）** | Godot / Unity 的原生窗口直接进舞台：抓帧走 `PrintWindow`，JPEG 流 20–25 fps，局部脏帧自动丢弃 |
+| **原生窗口捕获** | Godot / Unity 的原生窗口直接进舞台：`PrintWindow` 抓帧 + 双线程编码，15–24 fps（可切「清晰 / 流畅」），局部脏帧自动丢弃 |
+| **直接在面板里玩** | 🖱 操作模式把鼠标/键盘转发到窗口（含 DPI 校正与按键映射），Esc 退出 |
+| **Game 视图裁剪** | ✂ 框选任意区域只看那一块（Unity 的 Game 视图），按窗口标题记忆 |
+| **打开即起播** | 记住每个项目上次用的配置与窗口，开面板自动恢复；也可关掉自动运行 |
 | 任意窗口接入 | 面板上的「选择窗口」可以把任何已在运行的窗口接进舞台（不只是游戏） |
 | 脏改动计数 | 保存**不刷新**，面板显示 `● N 处改动待运行`，按 ▶ 或让 agent 跑才重新加载 |
 | Playtest Bar | 运行 / 重载 / 停止 / 切换宽度 / 外部打开 |
 | 静态目录服务 | `/static/<root>/…` 按目录服务整包，`main.js`、贴图、字体、wasm 的相对路径都能加载，不受 `file://` 限制 |
 | Agent 工具 | `game_preview_run` / `game_preview_status` / `game_preview_stop` / `game_preview_windows` |
+| 画质档位 | 清晰（原尺寸 ~15–20 fps）/ 流畅（1100px ~24–30 fps），切换即重挂抓帧 |
+| 快捷键 | `F` 满屏、`R` 重载、`Esc` 退出满屏/操作模式 |
 
 ## 现在还不能做什么（v0.2 的边界）
 
@@ -124,8 +129,8 @@ Host 插件（零依赖）
 │     └── /file  静态单页服务（realpath 包含性校验）
 ├── 工作区扫描 + fs.watch 脏计数（跳过 node_modules/dist/build 等）
 ├── dev server / 引擎子进程管理（启动、等窗口/端口、退出捕获、日志尾）
-├── host/window.js       抓帧桥：行协议 → Promise + 帧流 + 健康指标
-└── host/window-capture.ps1  常驻 PowerShell 助手（C# 抓帧 + 双线程流水线）
+├── host/window.js       抓帧桥：行协议 → Promise + 帧流 + 健康指标 + 输入注入
+└── host/window-capture.ps1  常驻 PowerShell 助手（C# 抓帧/双线程流水线/DPI 感知/SendInput）
 ```
 
 Client 与 Host 之间有两条通道，**面板优先走同源**：
@@ -162,7 +167,8 @@ Client 与 Host 之间有两条通道，**面板优先走同源**：
 - 抓帧是 CPU 读回 + JPEG 编码：4K 窗口会掉到 5–8 fps；`captureWidth` 缩到 1280 能明显提速。
 - 独占全屏 / 最小化窗口抓不到，面板给的是提示而不是黑屏。
 - 编辑器路径（Cocos / 微信 cli / Godot / Unity）默认按常见位置猜，装到非默认盘要显式配置。
-- 窗口捕获没有输入转发，也没有暂停/单步/截图回传。
+- 窗口捕获的输入转发只覆盖键盘与鼠标（无手柄），F1–F12 与常用键已映射，输入法/中文输入未处理。
+- 抓帧后端仍是 `PrintWindow`：4K 窗口 + 原尺寸会掉到 10 fps 左右，切「流畅」能到 24–30。
 
 ## Roadmap
 
