@@ -339,6 +339,21 @@ function findGradle() {
   return null
 }
 
+function findPosixBash() {
+  return firstExisting([
+    'C:/Program Files/Git/bin/bash.exe',
+    'C:/Program Files/Git/usr/bin/bash.exe',
+    'C:/msys64/usr/bin/bash.exe',
+  ])
+}
+
+/** F:\\a\\b -> /f/a/b, the shape a POSIX shell on Windows understands. */
+function toPosixPath(file) {
+  const normalized = String(file).replace(/\\/g, '/')
+  const match = /^([A-Za-z]):(\/.*)?$/.exec(normalized)
+  return match ? `/${match[1].toLowerCase()}${match[2] ?? ''}` : normalized
+}
+
 function findExecutable(names) {
   const dirs = String(process.env.PATH ?? '').split(';').filter(Boolean)
   for (const dir of dirs) {
@@ -367,6 +382,7 @@ function toolchain(config, root) {
     jdk,
     androidSdk: sdk,
     gradle,
+    bash: findPosixBash(),
     androidDir: hasGradleProject ? androidDir : null,
     androidBuildScript: androidDir && existsSync(join(androidDir, 'build.sh')) ? join(androidDir, 'build.sh') : null,
     cmake: findExecutable(['cmake.exe']),
@@ -1140,7 +1156,12 @@ export function apply(ctx, config = {}) {
           exportPush(`JDK: ${tools.jdk}`)
           exportPush(`SDK: ${tools.androidSdk}`)
           if (tools.androidBuildScript) {
-            await runProcess('bash', [tools.androidBuildScript], tools.androidDir, 'android/build.sh', 25 * 60 * 1000, env)
+            if (tools.bash) {
+              await runProcess(tools.bash, [toPosixPath(tools.androidBuildScript)], tools.androidDir, 'android/build.sh', 25 * 60 * 1000, env)
+            } else {
+              exportPush('没有找到 Git Bash，改用 gradle 直接构建（assets 不会自动同步）')
+              await runProcess(tools.gradle, ['assembleDebug', '--no-daemon'], tools.androidDir, 'gradle assembleDebug', 25 * 60 * 1000, env)
+            }
           } else {
             await runProcess(tools.gradle, ['assembleDebug'], tools.androidDir, 'gradle assembleDebug', 25 * 60 * 1000, env)
           }
