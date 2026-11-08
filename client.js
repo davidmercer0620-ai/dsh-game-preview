@@ -139,6 +139,7 @@ window.__ModuleLoader__.load({
       }
 
       // 2) the loopback control API (web GUI without the same-origin bridge)
+      const loopbackNotes = []
       for (const port of PORTS) {
         for (const via of ['fetch', 'xhr']) {
           try {
@@ -152,8 +153,9 @@ window.__ModuleLoader__.load({
               health = { port, version: body.version ?? null, error: null, mode: 'loopback' }
               return endpoint
             }
-          } catch {
-            /* try the next transport / port */
+            loopbackNotes.push(`:${port}[${via}] → app=${body?.app ?? '?'}`)
+          } catch (error) {
+            if (port === PORTS[0]) loopbackNotes.push(`:${port}[${via}] → ${String(error?.message ?? error).slice(0, 40)}`)
           }
         }
       }
@@ -166,12 +168,13 @@ window.__ModuleLoader__.load({
       // already ends in /api/game-preview, so drop the duplicated prefix
       const rel = path.startsWith('/api/') ? path.slice('/api'.length) : path
       if (!base) {
-        const detail = originNotes.length ? originNotes.join(' | ') : '页面没有可用的 origin'
+        const notes = [...originNotes, ...loopbackNotes]
         health = {
           port: null,
           version: null,
-          error: `宿主未响应 · 同源：${detail} · 回环 7317–7332：无响应`,
+          error: '宿主未响应：所有传输都没通',
           mode: null,
+          attempts: notes.slice(0, 8),
         }
         throw new Error('宿主未响应：预览服务没有启动')
       }
@@ -213,6 +216,7 @@ window.__ModuleLoader__.load({
         background:color-mix(in srgb, currentColor 6%, transparent);border:1px solid color-mix(in srgb, currentColor 20%, transparent)}
       .gp-note{font-size:11px;opacity:.6;max-width:420px;line-height:1.6}
       .gp-err{color:#d9534f;font-size:11px;padding:6px 10px}
+      .gp-attempts{font-size:10px;opacity:.65;padding:2px 10px 6px;line-height:1.6;word-break:break-all;max-height:110px;overflow:auto}
       .gp-health{display:flex;align-items:flex-start;gap:6px;justify-content:space-between;font-size:10px;opacity:.6;
         padding:4px 10px;border-bottom:1px solid color-mix(in srgb, currentColor 8%, transparent);word-break:break-all;line-height:1.5}
       .gp-hint{color:#c8892f;font-size:11px;padding:6px 10px}
@@ -664,6 +668,9 @@ window.__ModuleLoader__.load({
             : (health.error ?? '正在连接宿主…'),
           h('button', { className: 'gp-btn', disabled: busy, onClick: () => void reconnect() }, '重新连接')),
         error ? h('div', { className: 'gp-err' }, error) : null,
+        !health.mode && health.attempts
+          ? h('div', { className: 'gp-attempts' }, health.attempts.map((line, i) => h('div', { key: i }, line)))
+          : null,
         blackHint
           ? h('div', { className: 'gp-hint' },
               blackHint,
