@@ -177,8 +177,8 @@ const windowSnap = {
   running: true,
   capture: { supported: true, running: true, fps: 24.5, width: 1280, height: 720, stale: false, error: null, errorCode: null, black: 0 },
 }
-// useState order in Panel: snap, error, busy, reloadKey, viewport, manualRoot, rootOverride, manualUrl, immersive, crop, pointerMode, quality, windows, roots, winBusy
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, 'sharp', null, null, false]
+// useState order in Panel: snap, error, busy, reloadKey, viewport, manualRoot, rootOverride, manualUrl, immersive, crop, pointerMode, showExport, quality, windows, roots, winBusy
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
 const windowTree = body.component({})
 const shots = []
 const badges = []
@@ -194,7 +194,7 @@ if (!badges.some((b) => b.includes('fps'))) throw new Error(`window stage render
 
 // a stale capture must show the disconnect badge rather than a silent freeze
 const staleSnap = { ...windowSnap, capture: { ...windowSnap.capture, fps: 0, stale: true } }
-react.__states = [staleSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, 'sharp', null, null, false]
+react.__states = [staleSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
 const staleTree = body.component({})
 const staleBadges = []
 walk(staleTree, (n) => { if (typeof n.children?.[0] === 'string' && n.children[0] === '已断流') staleBadges.push(n.children[0]) })
@@ -215,7 +215,7 @@ walk(windowTree, (n) => {
 if (vpBoxes[0] !== 'auto') throw new Error('stage box did not follow the auto viewport: ' + vpBoxes[0])
 
 // a phone preview must be a 390x844 logical viewport, not a stretched box
-react.__states = [windowSnap, null, false, 0, 'mobile', '', '', '', false, { mode: false, rect: null }, false, 'sharp', null, null, false]
+react.__states = [windowSnap, null, false, 0, 'mobile', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
 const phoneTree = body.component({})
 const screens = []
 walk(phoneTree, (n) => {
@@ -238,7 +238,7 @@ walk(windowTree, (n) => {
 if (!dirChips.length) throw new Error('panel did not render a workspace directory chip')
 
 // the window picker renders one option per capturable window
-react.__states = [windowSnap, null, false, 0, 'pc', '', '', '', false, { mode: false, rect: null }, false, 'sharp', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
+react.__states = [windowSnap, null, false, 0, 'pc', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
 const pickerTree = body.component({})
 let pickerOptions = 0
 walk(pickerTree, (n) => { if (n.type === 'select') pickerOptions = (n.children ?? []).length })
@@ -247,7 +247,7 @@ if (pickerOptions < 2) throw new Error('window picker rendered no window options
 // no workspace known yet: the panel must offer the discovered directories
 // instead of a dead end that says "nothing detected"
 const noRootSnap = { root: null, configs: [], active: null, dirty: [], running: false, capture: { supported: true } }
-react.__states = [noRootSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, 'sharp', null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
+react.__states = [noRootSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
 const noRootTree = body.component({})
 const rootOptions = []
 walk(noRootTree, (n) => {
@@ -281,7 +281,7 @@ if (primaryChips.length !== 1) throw new Error(`expected one primary config butt
 if (moreMenus.length !== 1) throw new Error('expected one "other configs" menu')
 
 // immersive mode hides every control and floats a single exit pill
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', true, { mode: false, rect: null }, false, 'sharp', null, null, false]
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', true, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
 const immersiveTree = body.component({})
 const exitPills = []
 const chipRows = []
@@ -293,7 +293,7 @@ if (exitPills.length !== 1) throw new Error('immersive mode renders no exit cont
 if (chipRows.length !== 0) throw new Error('immersive mode must hide the config row')
 
 // pointer mode: the capture becomes an interactive surface
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, true, 'sharp', null, null, false]
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, true, false, 'sharp', null, null, false]
 const interactiveTree = body.component({})
 const interactiveImgs = []
 walk(interactiveTree, (n) => {
@@ -304,7 +304,7 @@ if (typeof interactiveImgs[0].onMouseDown !== 'function') throw new Error('inter
 if (typeof interactiveImgs[0].onKeyDown !== 'function') throw new Error('interactive stage has no key handler')
 
 // crop tool: selecting a region is a mode, and a stored rect scales the image
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: true, rect: null }, false, 'sharp', null, null, false]
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: true, rect: null }, false, false, 'sharp', null, null, false]
 const cropModeTree = body.component({})
 const cropLayers = []
 walk(cropModeTree, (n) => {
@@ -312,7 +312,7 @@ walk(cropModeTree, (n) => {
 })
 if (cropLayers.length !== 1) throw new Error('crop mode rendered no selection layer')
 
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: { x: 0.25, y: 0.1, w: 0.5, h: 0.5 } }, false, 'sharp', null, null, false]
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: { x: 0.25, y: 0.1, w: 0.5, h: 0.5 } }, false, false, 'sharp', null, null, false]
 const croppedTree = body.component({})
 const croppedInners = []
 walk(croppedTree, (n) => {

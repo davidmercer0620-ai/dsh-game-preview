@@ -363,6 +363,15 @@ window.__ModuleLoader__.load({
       .gp-chip-select{appearance:none;padding-right:18px;background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
         background-position:calc(100% - 9px) 50%,calc(100% - 5px) 50%;background-size:4px 4px,4px 4px;background-repeat:no-repeat}
       .gp-stage{position:relative;flex:1;min-height:0;display:flex;align-items:stretch;justify-content:center;background:color-mix(in srgb, currentColor 4%, transparent);overflow:hidden}
+      .gp-export{border-top:1px solid color-mix(in srgb, currentColor 14%, transparent);padding:8px 10px;display:flex;flex-direction:column;gap:6px;
+        background:color-mix(in srgb, currentColor 4%, transparent);max-height:46%;overflow:auto}
+      .gp-export-head{display:flex;align-items:center;gap:8px}
+      .gp-export-tc{font-size:10px;opacity:.6;word-break:break-all}
+      .gp-export-row{display:flex;align-items:center;gap:8px}
+      .gp-export-log{font-size:10px;opacity:.72;background:color-mix(in srgb, currentColor 6%, transparent);border-radius:6px;padding:6px 8px;
+        max-height:96px;overflow:auto;line-height:1.6;word-break:break-all}
+      .gp-export-run{color:#c8892f}
+      .gp-export-result{display:flex;align-items:center;gap:8px;font-size:11px}
       .gp-crop{position:absolute;inset:0;overflow:hidden;background:#000}
       .gp-crop-inner{position:absolute;transform-origin:top left}
       .gp-crop-inner .gp-shot{width:100%;height:100%;object-fit:fill}
@@ -438,6 +447,124 @@ window.__ModuleLoader__.load({
         if (code >= 0x30 && code <= 0x5a) return code
       }
       return 0
+    }
+
+    /* ------------------------------------------------------------- export */
+
+    const EXPORT_TARGETS = [
+      { id: 'web', label: 'Web 包（.zip）', hint: '把构建产物打成一个压缩包，直接上传静态托管' },
+      { id: 'apk', label: 'Android APK', hint: '用项目自带的 android/ 外壳跑 Gradle' },
+      { id: 'exe', label: 'Windows EXE', hint: 'Cocos 原生构建，需要 VS + CMake' },
+    ]
+
+    function ExportPanel({ onClose }) {
+      const [state, setState] = useState(null)
+      const [error, setError] = useState(null)
+      const [busy, setBusy] = useState(false)
+
+      useEffect(() => {
+        let alive = true
+        let timer = null
+        const tick = async () => {
+          try {
+            const next = await call('/api/export')
+            if (alive) {
+              setState(next)
+              setError(null)
+            }
+          } catch (err) {
+            if (alive) setError(String(err?.message ?? err))
+          }
+          if (alive) timer = setTimeout(tick, 1500)
+        }
+        void tick()
+        return () => {
+          alive = false
+          if (timer) clearTimeout(timer)
+        }
+      }, [])
+
+      const start = async (target) => {
+        setBusy(true)
+        setError(null)
+        try {
+          setState(await call('/api/export', { method: 'POST', body: JSON.stringify({ target }) }))
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const reveal = async (file) => {
+        try {
+          await call('/api/reveal', { method: 'POST', body: JSON.stringify({ path: file }) })
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        }
+      }
+
+      const tc = state?.toolchain ?? null
+      const ready = (id) => {
+        if (!tc) return false
+        if (id === 'web') return true
+        if (id === 'apk') return tc.apkReady
+        return tc.exeReady
+      }
+      const why = (id) => {
+        if (!tc) return ''
+        if (id === 'apk') {
+          const missing = []
+          if (!tc.jdk) missing.push('JDK')
+          if (!tc.androidSdk) missing.push('Android SDK')
+          if (!tc.gradle) missing.push('Gradle')
+          if (!tc.androidDir) missing.push('android/ 工程')
+          return missing.length ? `缺：${missing.join('、')}` : ''
+        }
+        if (id === 'exe') {
+          const missing = []
+          if (!tc.vsBuildTools) missing.push('Visual Studio C++')
+          if (!tc.cmake) missing.push('CMake')
+          if (!tc.cocosEditor) missing.push('Cocos Creator')
+          return missing.length ? `缺：${missing.join('、')}` : ''
+        }
+        return ''
+      }
+
+      return h('div', { className: 'gp-export' },
+        h('div', { className: 'gp-export-head' },
+          h('strong', null, '封包导出'),
+          h('span', { className: 'gp-note', style: { flex: 1 } }, state?.dist ?? ''),
+          h('button', { className: 'gp-btn', onClick: onClose }, '关闭')),
+        tc
+          ? h('div', { className: 'gp-export-tc' },
+              `JDK ${tc.jdk ? '✓' : '✗'} · SDK ${tc.androidSdk ? '✓' : '✗'} · Gradle ${tc.gradle ? '✓' : '✗'} · ` +
+              `android/ ${tc.androidDir ? '✓' : '✗'} · CMake ${tc.cmake ? '✓' : '✗'}`)
+          : null,
+        EXPORT_TARGETS.map((target) =>
+          h('div', { key: target.id, className: 'gp-export-row' },
+            h('div', { style: { flex: 1, minWidth: 0 } },
+              h('div', { style: { fontSize: 12, fontWeight: 600 } }, target.label),
+              h('div', { className: 'gp-note', style: { fontSize: 10 } }, why(target.id) || target.hint)),
+            h('button', {
+              className: 'gp-btn',
+              'data-primary': target.id === 'web' ? '1' : '0',
+              disabled: busy || state?.running || !ready(target.id),
+              onClick: () => void start(target.id),
+            }, '导出'))),
+        state?.running
+          ? h('div', { className: 'gp-export-log' }, h('div', { className: 'gp-export-run' }, `正在构建 ${state.target}…`), ...(state.log ?? []).map((line, i) => h('div', { key: i }, line)))
+          : state?.log?.length
+            ? h('div', { className: 'gp-export-log' }, ...(state.log ?? []).slice(-6).map((line, i) => h('div', { key: i }, line)))
+            : null,
+        error ? h('div', { className: 'gp-err' }, error) : null,
+        state?.error ? h('div', { className: 'gp-err' }, state.error) : null,
+        state?.result
+          ? h('div', { className: 'gp-export-result' },
+              h('span', { style: { flex: 1, minWidth: 0, wordBreak: 'break-all' } },
+                `${state.result.kind.toUpperCase()} · ${Math.round((state.result.size ?? 0) / 1024)} KB · ${state.result.file}`),
+              h('button', { className: 'gp-btn', onClick: () => void reveal(state.result.file) }, '打开目录'))
+          : null)
     }
 
     /* -------------------------------------------------------------- crop */
@@ -849,6 +976,7 @@ window.__ModuleLoader__.load({
       const [immersive, setImmersive] = useState(false)
       const [crop, setCrop] = useState({ mode: false, rect: null })
       const [pointerMode, setPointerMode] = useState(false)
+      const [showExport, setShowExport] = useState(false)
       const [quality, setQualityState] = useState(() => {
         try {
           const saved = String(window.localStorage.getItem('dsh-game-preview.quality') ?? '')
@@ -1497,6 +1625,7 @@ window.__ModuleLoader__.load({
               canCapture ? h('button', { className: 'gp-btn', style: { marginLeft: 8 }, onClick: () => void openPicker() }, '换一个窗口') : null)
           : null,
         stage,
+        showExport ? h(ExportPanel, { onClose: () => setShowExport(false) }) : null,
         h('div', { className: 'gp-bar' },
           h('button', { className: 'gp-btn', 'data-primary': '1', disabled: busy || !configs.length, onClick: () => void run(active?.id) }, '▶ 运行'),
           h('button', { className: 'gp-btn', disabled: !url, title: '重新加载预览', onClick: () => setReloadKey((n) => n + 1) }, '⟳ 重载'),
@@ -1540,6 +1669,12 @@ window.__ModuleLoader__.load({
           isWindow
             ? h('button', { className: 'gp-btn', title: '把当前画面存成 JPG', onClick: () => void saveShot() }, '⤓ 截图')
             : null,
+          h('button', {
+            className: 'gp-btn',
+            'data-primary': showExport ? '1' : '0',
+            title: '把游戏打成可分发的东西（Web 包 / APK / EXE）',
+            onClick: () => setShowExport((on) => !on),
+          }, '📦 导出'),
           h('button', { className: 'gp-btn', title: '隐藏所有控件，画面铺满', onClick: () => { setViewport('auto'); setImmersive(true) } }, '⛶ 满屏'),
           h('button', { className: 'gp-btn', disabled: !url, onClick: () => url && window.open(url, '_blank', 'noopener') }, '↗ 外部')),
       )

@@ -5,7 +5,7 @@
  */
 import { apply } from '../index.js'
 import { execFile, spawn } from 'node:child_process'
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -171,6 +171,38 @@ const blocked = await fetch(base + '/static/' + forged + '/win.ini')
 console.log('unregistered root', blocked.status)
 if (blocked.status !== 403) throw new Error('static route must refuse unregistered roots')
 
+/* ------------------------------------------------ packaging (export) */
+
+console.log('\n--- export ---')
+
+await fetch(base + '/api/detect', { method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ root: nested }) })
+const exportInfo = await (await fetch(base + '/api/export')).json()
+console.log('toolchain keys:', Object.keys(exportInfo.toolchain ?? {}).join(','))
+if (!exportInfo.toolchain) throw new Error('export status must report the toolchain')
+for (const key of ['jdk', 'androidSdk', 'gradle', 'androidDir', 'cmake', 'apkReady', 'exeReady']) {
+  if (!(key in exportInfo.toolchain)) throw new Error('toolchain is missing ' + key)
+}
+
+const exportStart = await (await fetch(base + '/api/export', {
+  method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ target: 'web' }),
+})).json()
+console.log('export web started:', exportStart.running, '| target:', exportStart.target)
+if (!exportStart.running) throw new Error('web export did not start')
+
+let exportDone = null
+for (let i = 0; i < 40 && !exportDone; i += 1) {
+  await new Promise((r) => setTimeout(r, 500))
+  const status = await (await fetch(base + '/api/export')).json()
+  if (!status.running) exportDone = status
+}
+console.log('export web result:', exportDone?.result?.kind, exportDone?.result?.size, 'B', '| error:', exportDone?.error ?? '-')
+if (!exportDone) throw new Error('web export never finished')
+if (!exportDone.result) throw new Error('web export produced no file: ' + exportDone.error)
+const exported = join(nested, 'dist')
+const zips = readdirSync(exported).filter((f) => f.endsWith('.zip'))
+console.log('dist zips:', zips.join(','), '| exists:', zips.length > 0)
+if (!zips.length) throw new Error('no zip in dist/')
+
 /* ------------------------------------- real dev server: start, wait, stop */
 
 const devApp = join(tmpdir(), 'dgp-dev')
@@ -225,10 +257,15 @@ console.log('\n--- window capture (v0.2) ---')
 const notepad = spawn('notepad.exe', [], { windowsHide: false, detached: false })
 try {
   await sleep(1400)
-  const listed = await (await fetch(base + '/api/window/list')).json()
-  console.log('windows', listed.ok, listed.windows?.length ?? 0)
-  if (!listed.ok) throw new Error('window list failed: ' + listed.error)
-  const target = (listed.windows ?? []).find((w) => w.pid === notepad.pid)
+  let listed = null
+  let target = null
+  for (let i = 0; i < 12 && !target; i += 1) {
+    listed = await (await fetch(base + '/api/window/list')).json()
+    if (!listed.ok) throw new Error('window list failed: ' + listed.error)
+    target = (listed.windows ?? []).find((w) => w.pid === notepad.pid)
+    if (!target) await sleep(500)
+  }
+  console.log('windows', listed?.ok, listed?.windows?.length ?? 0)
   if (!target) throw new Error('could not find the notepad window for pid ' + notepad.pid)
 
   const attached = await (await fetch(base + '/api/window/attach', {

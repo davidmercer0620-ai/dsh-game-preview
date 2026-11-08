@@ -7,7 +7,7 @@
  */
 import { createServer } from 'node:http'
 import { spawn, execFile } from 'node:child_process'
-import { existsSync, readFileSync, readdirSync, statSync, watch } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WindowCapture } from './host/window.js'
@@ -249,6 +249,119 @@ const BRIDGE_HTML = `<!doctype html><meta charset="utf-8"><title>game-preview br
   if (window.parent !== window) window.parent.postMessage({ __gp: 'ready' }, '*');
 })();
 </script>`
+
+
+/* ------------------------------------------------------------- export */
+
+const DIST = 'dist'
+
+function firstExisting(candidates) {
+  for (const candidate of candidates) {
+    try {
+      if (candidate && existsSync(candidate)) return candidate
+    } catch {}
+  }
+  return null
+}
+
+function matchIn(parent, pattern) {
+  try {
+    const hit = readdirSync(parent).filter((name) => pattern.test(name)).sort().pop()
+    return hit ? join(parent, hit) : null
+  } catch {
+    return null
+  }
+}
+
+function findJdk() {
+  const bases = [
+    process.env.JAVA_HOME,
+    matchIn('D:/Android', /^jdk/i),
+    matchIn('D:/', /^jdk/i),
+    matchIn('C:/tools', /^jdk/i),
+    matchIn('C:/Program Files/Java', /^jdk/i),
+    matchIn('C:/Program Files/Eclipse Adoptium', /^jdk/i),
+  ].filter(Boolean)
+  for (const base of bases) {
+    const javaExe = base.endsWith('java.exe') ? base : join(base, 'bin', 'java.exe')
+    if (existsSync(javaExe)) return dirname(dirname(javaExe))
+  }
+  return null
+}
+
+function findAndroidSdk() {
+  const home = process.env.USERPROFILE ?? 'C:/Users'
+  return firstExisting([
+    process.env.ANDROID_HOME,
+    process.env.ANDROID_SDK_ROOT,
+    'D:/Android/sdk',
+    'D:/Android/Sdk',
+    'C:/Android/sdk',
+    join(home, 'AppData', 'Local', 'Android', 'Sdk'),
+  ])
+}
+
+function findGradle() {
+  const onPath = findOnPath(/^gradle(\.bat)?$/i)
+  if (onPath) return onPath
+  const home = process.env.USERPROFILE ?? 'C:/Users'
+  const dists = join(home, '.gradle', 'wrapper', 'dists')
+  let names = []
+  try {
+    names = readdirSync(dists).filter((name) => /^gradle-/i.test(name))
+  } catch {
+    return null
+  }
+  for (const name of names.sort().reverse()) {
+    const inner = matchIn(join(dists, name), /^[0-9a-f]{16,}$/i)
+    const gradleDir = inner ? matchIn(inner, /^gradle-/i) : null
+    const bin = inner && gradleDir ? join(inner, gradleDir, 'bin', 'gradle.bat') : null
+    if (bin && existsSync(bin)) return bin
+  }
+  return null
+}
+
+function findExecutable(names) {
+  const dirs = String(process.env.PATH ?? '').split(';').filter(Boolean)
+  for (const dir of dirs) {
+    for (const name of names) {
+      const candidate = join(dir, name)
+      try {
+        if (existsSync(candidate)) return candidate
+      } catch {}
+    }
+  }
+  return null
+}
+
+/** What this machine can package right now, and which shell the project carries. */
+function toolchain(config, root) {
+  const jdk = findJdk()
+  const sdk = findAndroidSdk()
+  const gradle = findGradle()
+  const androidDir = root && existsSync(join(root, 'android')) ? join(root, 'android') : null
+  const hasGradleProject = Boolean(
+    androidDir && (existsSync(join(androidDir, 'build.gradle')) || existsSync(join(androidDir, 'settings.gradle'))),
+  )
+  return {
+    cocosEditor: config.cocosEditor && existsSync(config.cocosEditor) ? config.cocosEditor : null,
+    unityEditor: config.unityExe || findUnityEditor(),
+    jdk,
+    androidSdk: sdk,
+    gradle,
+    androidDir: hasGradleProject ? androidDir : null,
+    androidBuildScript: androidDir && existsSync(join(androidDir, 'build.sh')) ? join(androidDir, 'build.sh') : null,
+    cmake: findExecutable(['cmake.exe']),
+    vsBuildTools: firstExisting([
+      'C:/Program Files/Microsoft Visual Studio/2022/BuildTools',
+      'C:/Program Files/Microsoft Visual Studio/2022/Community',
+      'C:/Program Files (x86)/Microsoft Visual Studio/2019/BuildTools',
+    ]),
+    apkReady: Boolean(jdk && sdk && gradle && hasGradleProject),
+    exeReady: Boolean(findExecutable(['cmake.exe']) && firstExisting(['C:/Program Files/Microsoft Visual Studio/2022/BuildTools'])),
+    root: root ?? null,
+  }
+}
 
 /* ------------------------------------------------------------- html bundle */
 
@@ -540,6 +653,7 @@ export function apply(ctx, config = {}) {
   const roots = new Map() // root -> { configs, dirty:Set, watcher }
   const proc = { child: null, config: null, startedAt: 0, logTail: [], exe: null }
   const state = { active: null, lastRoot: null, lastError: null }
+  const exportJob = { running: false, target: null, startedAt: 0, log: [], result: null, error: null }
   const capture = new WindowCapture({
     helperPath: join(HERE, 'host', 'window-capture.ps1'),
     logger: log,
@@ -876,6 +990,185 @@ export function apply(ctx, config = {}) {
     if (!caps.hwnd) throw new Error('没有正在抓的窗口：先运行一个原生预览')
     await capture.start(caps.hwnd, { ...captureOptions(), ...(options ?? {}) })
     return snapshot(state.lastRoot ?? undefined)
+  }
+
+  function exportPush(line) {
+    exportJob.log.push(String(line).slice(0, 300))
+    if (exportJob.log.length > 80) exportJob.log.shift()
+  }
+
+  function exportStatus() {
+    return {
+      ok: true,
+      running: exportJob.running,
+      target: exportJob.target,
+      startedAt: exportJob.startedAt || null,
+      log: exportJob.log.slice(-12),
+      result: exportJob.result,
+      error: exportJob.error,
+      dist: state.lastRoot ? join(state.lastRoot, DIST) : null,
+      toolchain: toolchain(config, state.lastRoot ?? undefined),
+    }
+  }
+
+  function runProcess(exe, args, cwd, label, timeoutMs = 15 * 60 * 1000, extraEnv = null) {
+    return new Promise((resolve, reject) => {
+      exportPush(`$ ${label}`)
+      let child
+      try {
+        child = spawn(exe, args, {
+          cwd,
+          shell: false,
+          windowsHide: true,
+          env: extraEnv ? { ...engineEnv(), ...extraEnv } : engineEnv(),
+        })
+      } catch (error) {
+        reject(error)
+        return
+      }
+      const timer = setTimeout(() => {
+        exportPush(`${label} 超时，已终止`)
+        try { execFile('taskkill', ['/pid', String(child.pid), '/T', '/F'], () => {}) } catch {}
+        reject(new Error(`${label} 超时`))
+      }, timeoutMs)
+      child.stdout?.on('data', (buf) => String(buf).split(/\r?\n/).filter(Boolean).forEach((l) => exportPush(l)))
+      child.stderr?.on('data', (buf) => String(buf).split(/\r?\n/).filter(Boolean).forEach((l) => exportPush(l)))
+      child.on('error', (error) => { clearTimeout(timer); reject(error) })
+      child.on('exit', (code) => {
+        clearTimeout(timer)
+        if (code === 0) resolve(code)
+        else reject(new Error(`${label} 退出 code ${code}`))
+      })
+    })
+  }
+
+  /** Zip a directory with PowerShell so the plugin stays dependency-free. */
+  async function zipDirectory(dir, outFile) {
+    const ps = `Compress-Archive -Path '${dir.replace(/'/g, "''")}\\*' -DestinationPath '${outFile.replace(/'/g, "''")}' -Force`
+    await runProcess('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps], dirname(outFile), 'zip', 10 * 60 * 1000)
+  }
+
+  function newestFile(dir, pattern) {
+    let best = null
+    const walk = (current) => {
+      let entries = []
+      try {
+        entries = readdirSync(current, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        const full = join(current, entry.name)
+        if (entry.isDirectory()) walk(full)
+        else if (pattern.test(entry.name)) {
+          try {
+            const stat = statSync(full)
+            if (!best || stat.mtimeMs > best.mtimeMs) best = { file: full, size: stat.size, mtimeMs: stat.mtimeMs }
+          } catch {}
+        }
+      }
+    }
+    walk(dir)
+    return best
+  }
+
+  async function startExport(target) {
+    if (exportJob.running) throw new Error('已经有一个导出任务在跑')
+    const root = state.lastRoot
+    if (!root) throw new Error('还没有工作区')
+    const tools = toolchain(config, root)
+
+    exportJob.running = true
+    exportJob.target = target
+    exportJob.startedAt = Date.now()
+    exportJob.log = []
+    exportJob.result = null
+    exportJob.error = null
+
+    void (async () => {
+      try {
+        const dist = join(root, DIST)
+        mkdirSync(dist, { recursive: true })
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+        const entry = ensureRoot(root)
+        if (!entry.configs) entry.configs = detect(entry.root)
+
+        if (target === 'web') {
+          const webCfg = entry.configs.find((c) => String(c.id).startsWith('static@') || c.id === 'static')
+          if (!webCfg) throw new Error('这个项目没有现成的 Web 构建产物：先构建 web-desktop / web-mobile（Cocos 里选 Web Mobile 并构建）')
+          const dir = resolve(root, webCfg.dir ?? '.')
+          const out = join(dist, `web-${stamp}.zip`)
+          exportPush(`打包 ${dir}`)
+          await zipDirectory(dir, out)
+          const size = statSync(out).size
+          exportJob.result = { kind: 'web', file: out, size }
+          exportPush(`完成：${out}（${Math.round(size / 1024)} KB）`)
+          return
+        }
+
+        if (target === 'apk') {
+          if (!tools.jdk || !tools.androidSdk || !tools.gradle) {
+            const missing = [
+              !tools.jdk && 'JDK 17',
+              !tools.androidSdk && 'Android SDK',
+              !tools.gradle && 'Gradle',
+            ].filter(Boolean)
+            throw new Error(`Android 工具链缺：${missing.join('、')}`)
+          }
+          if (!tools.androidDir) {
+            throw new Error('这个项目没有 android/ Gradle 工程：把项目自带的 Android 外壳放进来（或先让 Cocos 导出 android 平台）')
+          }
+          const env = { JAVA_HOME: tools.jdk, ANDROID_HOME: tools.androidSdk, ANDROID_SDK_ROOT: tools.androidSdk }
+          exportPush(`JDK: ${tools.jdk}`)
+          exportPush(`SDK: ${tools.androidSdk}`)
+          if (tools.androidBuildScript) {
+            await runProcess('bash', [tools.androidBuildScript], tools.androidDir, 'android/build.sh', 25 * 60 * 1000, env)
+          } else {
+            await runProcess(tools.gradle, ['assembleDebug'], tools.androidDir, 'gradle assembleDebug', 25 * 60 * 1000, env)
+          }
+          const apk =
+            newestFile(join(tools.androidDir, 'app', 'build', 'outputs'), /\.apk$/i) ??
+            newestFile(root, /\.apk$/i)
+          if (!apk) throw new Error('Gradle 结束了但没找到 APK：看 android/app/build/outputs')
+          const out = join(dist, `apk-${stamp}.apk`)
+          copyFileSync(apk.file, out)
+          exportJob.result = { kind: 'apk', file: out, size: statSync(out).size }
+          exportPush(`完成：${out}（${Math.round(statSync(out).size / 1024)} KB）`)
+          return
+        }
+
+        if (target === 'exe') {
+          const engineCfg = entry.configs.find((c) => String(c.id).startsWith('cocos-web'))
+          if (engineCfg && tools.cocosEditor && tools.cmake) {
+            const projectDir = resolve(root, engineCfg.dir ?? '.')
+            exportPush('调用 Cocos Creator 构建 windows 平台')
+            await runProcess(tools.cocosEditor, ['--project', projectDir, '--build', 'platform=windows;debug=false'], projectDir, 'cocos windows', 25 * 60 * 1000)
+            const artifact = newestFile(join(projectDir, 'build', 'windows'), /\.exe$/i)
+            if (!artifact) throw new Error('构建结束但没找到 EXE：看 build/windows')
+            const out = join(dist, `exe-${stamp}.exe`)
+            copyFileSync(artifact.file, out)
+            exportJob.result = { kind: 'exe', file: out, size: statSync(out).size }
+            exportPush(`完成：${out}`)
+            return
+          }
+          const missing = [
+            !tools.vsBuildTools && 'Visual Studio C++ 工作负载',
+            !tools.cmake && 'CMake',
+            !tools.cocosEditor && 'Cocos Creator（原生构建用）',
+          ].filter(Boolean)
+          throw new Error(`Windows 原生构建缺：${missing.join('、')}。Web 包可以直接导出，原生 EXE 需要这套工具链`)
+        }
+
+        throw new Error(`未知的导出目标：${target}`)
+      } catch (error) {
+        exportJob.error = String(error?.message ?? error)
+        exportPush(`失败：${exportJob.error}`)
+      } finally {
+        exportJob.running = false
+      }
+    })()
+
+    return exportStatus()
   }
 
   function rootsPayload() {
@@ -1239,6 +1532,37 @@ export function apply(ctx, config = {}) {
         send(res, headers, await attachWindow(body))
       } catch (error) {
         send(res, headers, { ok: false, error: String(error?.message ?? error) }, 500)
+      }
+      return
+    }
+
+    if (path === '/api/reveal' && req.method === 'POST') {
+      const body = await readBody(req)
+      const target = String(body?.path ?? '')
+      if (!target || !existsSync(target)) {
+        send(res, headers, { ok: false, error: '文件不存在' }, 404)
+        return
+      }
+      try {
+        execFile('explorer.exe', ['/select,', target], () => {})
+        send(res, headers, { ok: true })
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 500)
+      }
+      return
+    }
+
+    if (path === '/api/export' && req.method === 'GET') {
+      send(res, headers, exportStatus())
+      return
+    }
+
+    if (path === '/api/export' && req.method === 'POST') {
+      const body = await readBody(req)
+      try {
+        send(res, headers, await startExport(String(body?.target ?? 'web')))
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 400)
       }
       return
     }
@@ -1810,6 +2134,35 @@ export function apply(ctx, config = {}) {
         return jsonResponse(attach)
       } catch (error) {
         return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+      }
+    }, 'buffered')
+
+    add(`${API_PREFIX}/reveal`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      const target = String(body?.path ?? '')
+      if (!target || !existsSync(target)) return jsonResponse({ ok: false, error: '文件不存在' }, 404)
+      try {
+        execFile('explorer.exe', ['/select,', target], () => {})
+        return jsonResponse({ ok: true })
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+      }
+    }, 'buffered')
+
+    add(`${API_PREFIX}/export`, ['GET'], () => jsonResponse(exportStatus()))
+
+    add(`${API_PREFIX}/export`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      try {
+        return jsonResponse(await startExport(String(body?.target ?? 'web')))
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 400)
       }
     }, 'buffered')
 
