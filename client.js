@@ -8,6 +8,11 @@
  * The stage renders either an <iframe> (web preview) or an <img> fed by the
  * Host's multipart /stream (native window capture, v0.2).
  */
+// A profile can end up with two package entries (an old unscoped link and a
+// scoped one) that both serve this file; loading the module twice makes the
+// host module table reject it and the panel renders blank.
+if (!window.__dshGamePreviewModuleRegistered) {
+  window.__dshGamePreviewModuleRegistered = true
 window.__ModuleLoader__.load({
   id: 'dsh-game-preview',
   factory(require) {
@@ -1826,3 +1831,4 @@ window.__ModuleLoader__.load({
     }
   },
 })
+}
