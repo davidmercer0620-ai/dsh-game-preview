@@ -179,6 +179,8 @@ export class WindowCapture {
         const [w, h] = rest.split(' ').map(Number)
         this.#state.width = w || 0
         this.#state.height = h || 0
+        this.#state.running = true
+        this.#state.starting = false
         const pending = this.#pendingStart
         this.#pendingStart = null
         pending?.resolve()
@@ -233,6 +235,7 @@ export class WindowCapture {
         if (pending) {
           pending.reject(new Error(this.#state.error))
           this.#state.running = false
+          this.#state.starting = false
           this.#restart.hwnd = null
         }
         if (code === 'window-closed') {
@@ -242,6 +245,9 @@ export class WindowCapture {
         break
       }
       case 'STOPPED': {
+        // the helper emits STOPPED for the session it just tore down; while a new
+        // start is still being acknowledged that event belongs to the old one
+        if (this.#pendingStart || this.#state.starting) break
         this.#state.running = false
         break
       }
@@ -279,7 +285,7 @@ export class WindowCapture {
 
     this.#state = {
       ...this.#state,
-      running: true, hwnd: Number(hwnd), startedAt: Date.now(), error: null, errorCode: null,
+      running: false, starting: true, hwnd: Number(hwnd), startedAt: Date.now(), error: null, errorCode: null,
       drops: 0, black: 0, frames: 0, bytes: 0,
     }
     this.#frames = []
@@ -297,7 +303,12 @@ export class WindowCapture {
       }
     })
     this.#child.stdin.write(`START ${hwnd} ${fps} ${maxWidth} ${quality}\n`)
-    await confirmed
+    try {
+      await confirmed
+    } catch (error) {
+      this.#state.starting = false
+      throw error
+    }
     return this.status()
   }
 

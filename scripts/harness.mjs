@@ -271,6 +271,36 @@ try {
   console.log('window closed ->', closed?.errorCode ?? 'not detected', '|', closed?.error ?? '')
   if (!closed) throw new Error('closing the window must be reported as window-closed')
 
+  // restarting a capture must survive the STOPPED event of the previous session;
+  // it used to flip running=false and silently discard every frame
+  const stopOnce = await (await fetch(base + '/api/stop', { method: 'POST', headers: JSON_HEADERS, body: '{}' })).json()
+  void stopOnce
+  const relaunch = spawn('notepad.exe', [], { windowsHide: false, detached: false })
+  try {
+    await sleep(1200)
+    const relisted = await (await fetch(base + '/api/window/list')).json()
+    const again = (relisted.windows ?? []).find((w) => w.pid === relaunch.pid)
+    if (!again) throw new Error('second notepad window not found')
+    const first = await (await fetch(base + '/api/window/attach', {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ hwnd: again.hwnd }),
+    })).json()
+    if (!first.ok) throw new Error('first attach failed: ' + first.error)
+    await (await fetch(base + '/api/stop', { method: 'POST', headers: JSON_HEADERS, body: '{}' })).json()
+    const second = await (await fetch(base + '/api/window/attach', {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ hwnd: again.hwnd }),
+    })).json()
+    if (!second.ok) throw new Error('second attach failed: ' + second.error)
+    await sleep(1200)
+    const restarted = await (await fetch(base + '/api/state')).json()
+    console.log('restarted capture', restarted.capture.running, 'frames:', restarted.capture.frames)
+    if (!restarted.capture.running) throw new Error('capture did not stay running after a restart')
+    if (!(restarted.capture.frames > 0)) throw new Error('restarted capture produced no frames (STOPPED race)')
+  } finally {
+    try { relaunch.kill() } catch {}
+    await fetch(base + '/api/stop', { method: 'POST', headers: JSON_HEADERS, body: '{}' }).catch(() => {})
+  }
+
+
   const stoppedCapture = await (await fetch(base + '/api/stop', { method: 'POST', headers: JSON_HEADERS, body: '{}' })).json()
   console.log('capture stopped', stoppedCapture.capture?.running === false)
   if (stoppedCapture.capture?.running !== false) throw new Error('stop must stop the capture')
