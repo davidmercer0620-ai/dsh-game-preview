@@ -312,11 +312,29 @@ function findGradle() {
   } catch {
     return null
   }
+  // dists/<gradle-x.y-bin>/<hash>/<gradle-x.y>/bin/gradle.bat
   for (const name of names.sort().reverse()) {
-    const inner = matchIn(join(dists, name), /^[0-9a-f]{16,}$/i)
-    const gradleDir = inner ? matchIn(inner, /^gradle-/i) : null
-    const bin = inner && gradleDir ? join(inner, gradleDir, 'bin', 'gradle.bat') : null
-    if (bin && existsSync(bin)) return bin
+    const base = join(dists, name)
+    let children = []
+    try {
+      children = readdirSync(base)
+    } catch {
+      continue
+    }
+    for (const child of children) {
+      const unpacked = join(base, child)
+      let inner = []
+      try {
+        if (!statSync(unpacked).isDirectory()) continue
+        inner = readdirSync(unpacked).filter((entry) => /^gradle-/i.test(entry))
+      } catch {
+        continue
+      }
+      for (const gradleDir of inner) {
+        const bin = join(unpacked, gradleDir, 'bin', 'gradle.bat')
+        if (existsSync(bin)) return bin
+      }
+    }
   }
   return null
 }
