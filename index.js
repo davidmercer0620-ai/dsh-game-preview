@@ -858,6 +858,19 @@ export function apply(ctx, config = {}) {
     return entry.configs.find((c) => c.id === configId) ?? entry.configs[0]
   }
 
+  function handleInput(body) {
+    const hwnd = Number(body?.hwnd) || capture.status().hwnd
+    if (!hwnd) throw new Error('还没有抓到窗口：先运行一个原生预览')
+    const type = String(body?.type ?? '')
+    if (type === 'move') capture.pointer('move', body.x, body.y)
+    else if (type === 'down') capture.pointer('down', body.x, body.y, body.button)
+    else if (type === 'up') capture.pointer('up', body.x, body.y, body.button)
+    else if (type === 'wheel') capture.wheel(body.delta)
+    else if (type === 'key') capture.key(body.vk, Boolean(body.down))
+    else throw new Error(`未知的输入类型：${type}`)
+    return { ok: true }
+  }
+
   function rootsPayload() {
     const seenDirs = new Set()
     const candidates = [
@@ -1219,6 +1232,15 @@ export function apply(ctx, config = {}) {
         send(res, headers, await attachWindow(body))
       } catch (error) {
         send(res, headers, { ok: false, error: String(error?.message ?? error) }, 500)
+      }
+      return
+    }
+
+    if (path === '/api/input' && req.method === 'POST') {
+      try {
+        send(res, headers, handleInput(await readBody(req)))
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 400)
       }
       return
     }
@@ -1772,6 +1794,18 @@ export function apply(ctx, config = {}) {
         return jsonResponse(attach)
       } catch (error) {
         return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+      }
+    }, 'buffered')
+
+    add(`${API_PREFIX}/input`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      try {
+        return jsonResponse(handleInput(body))
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 400)
       }
     }, 'buffered')
 

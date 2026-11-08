@@ -62,6 +62,19 @@ namespace GpCaptureHost {
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out RECT value, int size);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
+    [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
+    [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, int data, IntPtr extra);
+    [DllImport("user32.dll")] public static extern void keybd_event(byte vk, byte scan, uint flags, IntPtr extra);
+
+    public const uint MOUSEEVENTF_LEFTDOWN = 0x0002;
+    public const uint MOUSEEVENTF_LEFTUP = 0x0004;
+    public const uint MOUSEEVENTF_RIGHTDOWN = 0x0008;
+    public const uint MOUSEEVENTF_RIGHTUP = 0x0010;
+    public const uint MOUSEEVENTF_MIDDLEDOWN = 0x0020;
+    public const uint MOUSEEVENTF_MIDDLEUP = 0x0040;
+    public const uint MOUSEEVENTF_WHEEL = 0x0800;
+    public const uint KEYEVENTF_KEYUP = 0x0002;
 
     public const uint GW_OWNER = 4;
 
@@ -196,6 +209,39 @@ namespace GpCaptureHost {
       _capThread = null; _encThread = null;
       lock (FrameLock) { _pending = null; }
       Emit("STOPPED");
+    }
+
+    /* ---------------------------------------------------------- input */
+
+    public static void Pointer(long hwnd, string action, double nx, double ny, string button) {
+      var target = new IntPtr(hwnd);
+      if (!Native.IsWindow(target)) return;
+      var bounds = Native.Bounds(target);
+      int x = bounds.Left + (int)Math.Round(nx * (bounds.Right - bounds.Left));
+      int y = bounds.Top + (int)Math.Round(ny * (bounds.Bottom - bounds.Top));
+      if (action == "move") {
+        Native.SetCursorPos(x, y);
+        return;
+      }
+      var fg = Native.SetForegroundWindow(target);
+      Native.SetCursorPos(x, y);
+      string side = string.IsNullOrEmpty(button) ? "left" : button.ToLowerInvariant();
+      uint down = side == "right" ? Native.MOUSEEVENTF_RIGHTDOWN
+        : side == "middle" ? Native.MOUSEEVENTF_MIDDLEDOWN
+        : Native.MOUSEEVENTF_LEFTDOWN;
+      uint up = side == "right" ? Native.MOUSEEVENTF_RIGHTUP
+        : side == "middle" ? Native.MOUSEEVENTF_MIDDLEUP
+        : Native.MOUSEEVENTF_LEFTUP;
+      Native.mouse_event(action == "down" ? down : up, 0, 0, 0, IntPtr.Zero);
+      if (!fg) Emit("NOTICE foreground-failed");
+    }
+
+    public static void Wheel(int delta) {
+      Native.mouse_event(Native.MOUSEEVENTF_WHEEL, 0, 0, delta, IntPtr.Zero);
+    }
+
+    public static void Key(int vk, bool down) {
+      Native.keybd_event((byte)vk, 0, down ? 0u : Native.KEYEVENTF_KEYUP, IntPtr.Zero);
     }
 
     public static void Quit() {
@@ -381,6 +427,14 @@ while ($true) {
         [GpCaptureHost.Capture]::Start($hwnd, $fps, $width, $quality)
       }
       'STOP' { [GpCaptureHost.Capture]::Stop() }
+      'MOVE' {
+        [GpCaptureHost.Capture]::Pointer([int64]$parts[1], 'move', [double]$parts[2], [double]$parts[3], '')
+      }
+      'BUTTON' {
+        [GpCaptureHost.Capture]::Pointer([int64]$parts[1], $parts[2].ToLowerInvariant(), [double]$parts[3], [double]$parts[4], $(if ($parts.Length -gt 5) { $parts[5] } else { 'left' }))
+      }
+      'WHEEL' { [GpCaptureHost.Capture]::Wheel([int]$parts[1]) }
+      'KEY' { [GpCaptureHost.Capture]::Key([int]$parts[1], $parts[2] -eq '1') }
       'QUIT' { [GpCaptureHost.Capture]::Quit(); break }
       default { [GpCaptureHost.Capture]::EmitError('bad-args', "unknown command: $cmd") }
     }

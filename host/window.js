@@ -357,6 +357,35 @@ export class WindowCapture {
     return this.#last
   }
 
+  /* ------------------------------------------------------------ input */
+
+  #send(command) {
+    if (!this.#child || !this.#state.hwnd) return false
+    try {
+      this.#child.stdin.write(`${command}\n`)
+      return true
+    } catch {
+      return false
+    }
+  }
+
+  pointer(action, x, y, button) {
+    const hwnd = this.#state.hwnd
+    if (!hwnd) return false
+    const nx = Math.min(1, Math.max(0, Number(x) || 0))
+    const ny = Math.min(1, Math.max(0, Number(y) || 0))
+    if (action === 'move') return this.#send(`MOVE ${hwnd} ${nx.toFixed(5)} ${ny.toFixed(5)}`)
+    return this.#send(`BUTTON ${hwnd} ${action} ${nx.toFixed(5)} ${ny.toFixed(5)} ${button ?? 'left'}`)
+  }
+
+  wheel(delta) {
+    return this.#send(`WHEEL ${Math.round(Number(delta) || 120)}`)
+  }
+
+  key(vk, down) {
+    return this.#send(`KEY ${Number(vk) || 0} ${down ? 1 : 0}`)
+  }
+
   status() {
     const now = Date.now()
     const recent = this.#frames.filter((t) => now - t < 2000)

@@ -271,6 +271,19 @@ try {
   console.log('window closed ->', closed?.errorCode ?? 'not detected', '|', closed?.error ?? '')
   if (!closed) throw new Error('closing the window must be reported as window-closed')
 
+  // pointer events are forwarded to the captured window
+  const moved = await (await fetch(base + '/api/input', {
+    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ type: 'move', x: 0.5, y: 0.5 }),
+  })).json()
+  console.log('input move', moved.ok)
+  if (moved.ok !== true) throw new Error('input forwarding rejected a move: ' + moved.error)
+
+  const badInput = await fetch(base + '/api/input', {
+    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ type: 'nope' }),
+  })
+  console.log('input bad type', badInput.status)
+  if (badInput.status !== 400) throw new Error('an unknown input type must be a 400')
+
   // restarting a capture must survive the STOPPED event of the previous session;
   // it used to flip running=false and silently discard every frame
   const stopOnce = await (await fetch(base + '/api/stop', { method: 'POST', headers: JSON_HEADERS, body: '{}' })).json()

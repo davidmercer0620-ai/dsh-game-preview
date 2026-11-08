@@ -368,6 +368,8 @@ window.__ModuleLoader__.load({
       .gp-device-tag{position:absolute;bottom:6px;right:10px;font-size:10px;opacity:.5;pointer-events:none}
       .gp-frame{width:100%;height:100%;border:0;background:#000;display:block}
       .gp-shot{width:100%;height:100%;object-fit:contain;background:#000;display:block;image-rendering:auto}
+      .gp-shot[data-interactive="1"]{cursor:crosshair;outline:none}
+      .gp-shot[data-interactive="1"]:focus-visible{outline:1px solid #7aa7ff}
       .gp-live{position:absolute;left:8px;top:8px;display:flex;gap:6px;align-items:center;pointer-events:none;font-size:10px}
       .gp-live span{background:rgba(12,12,14,.72);color:#eee;border-radius:999px;padding:2px 8px;backdrop-filter:blur(4px)}
       .gp-live span[data-warn="1"]{background:rgba(160,60,30,.85)}
@@ -403,6 +405,24 @@ window.__ModuleLoader__.load({
     function useStyles() {
       // returns a style element rendered inside the panel so unmounting removes it
       return h('style', { 'data-game-preview': '1' }, css)
+    }
+
+    /* --------------------------------------------------------- interaction */
+
+    const KEYS = {
+      ArrowLeft: 0x25, ArrowUp: 0x26, ArrowRight: 0x27, ArrowDown: 0x28,
+      Enter: 0x0d, Escape: 0x1b, ' ': 0x20, Spacebar: 0x20, Tab: 0x09,
+      Shift: 0x10, Control: 0x11, Alt: 0x12, Backspace: 0x08,
+    }
+
+    function virtualKey(key) {
+      if (KEYS[key] !== undefined) return KEYS[key]
+      if (typeof key === 'string' && key.length === 1) {
+        const upper = key.toUpperCase()
+        const code = upper.charCodeAt(0)
+        if (code >= 0x30 && code <= 0x5a) return code
+      }
+      return 0
     }
 
     /* -------------------------------------------------------------- crop */
@@ -507,7 +527,7 @@ window.__ModuleLoader__.load({
      * Native windows arrive either as one MJPEG <img> (loopback) or as polled
      * JPEG bytes (same-origin, where <img> cannot reach the control API).
      */
-    function WindowStage({ mode, fallbackUrl, reloadKey, alt, onError }) {
+    function WindowStage({ mode, fallbackUrl, reloadKey, alt, onError, interaction }) {
       const live = mode === 'origin' || mode === 'bridge'
       const [src, setSrc] = useState(live ? null : fallbackUrl)
       useEffect(() => {
@@ -575,8 +595,43 @@ window.__ModuleLoader__.load({
           if (currentUrl) URL.revokeObjectURL(currentUrl)
         }
       }, [live, mode, fallbackUrl, reloadKey])
-      return h('img', { className: 'gp-shot', src: src ?? undefined, alt: alt ?? 'game window', onError })
+      const live_ = interaction && interaction.enabled
+      const norm = (event) => {
+        const rect = event.currentTarget.getBoundingClientRect()
+        if (!rect.width || !rect.height) return { x: 0, y: 0 }
+        return {
+          x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+          y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+        }
+      }
+      return h('img', {
+        className: 'gp-shot',
+        src: src ?? undefined,
+        alt: alt ?? 'game window',
+        onError,
+        'data-interactive': live_ ? '1' : '0',
+        tabIndex: live_ ? 0 : -1,
+        onMouseMove: live_ ? (event) => interaction.send({ type: 'move', ...norm(event) }) : undefined,
+        onMouseDown: live_ ? (event) => { event.preventDefault(); interaction.send({ type: 'down', ...norm(event), button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left' }) } : undefined,
+        onMouseUp: live_ ? (event) => { event.preventDefault(); interaction.send({ type: 'up', ...norm(event), button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left' }) } : undefined,
+        onContextMenu: live_ ? (event) => event.preventDefault() : undefined,
+        onWheel: live_ ? (event) => { event.preventDefault(); interaction.send({ type: 'wheel', delta: event.deltaY < 0 ? 120 : -120 }) } : undefined,
+        onKeyDown: live_ ? (event) => {
+          const vk = virtualKey(event.key)
+          if (!vk) return
+          event.preventDefault()
+          interaction.send({ type: 'key', vk, down: true })
+        } : undefined,
+        onKeyUp: live_ ? (event) => {
+          const vk = virtualKey(event.key)
+          if (!vk) return
+          event.preventDefault()
+          interaction.send({ type: 'key', vk, down: false })
+        } : undefined,
+      })
     }
+
+    /* --------------------------------------------------------- interaction */
 
     /* -------------------------------------------------------------- crop */
 
@@ -641,7 +696,7 @@ window.__ModuleLoader__.load({
      * Native windows arrive either as one MJPEG <img> (loopback) or as polled
      * JPEG bytes (same-origin, where <img> cannot reach the control API).
      */
-    function WindowStage({ mode, fallbackUrl, reloadKey, alt, onError }) {
+    function WindowStage({ mode, fallbackUrl, reloadKey, alt, onError, interaction }) {
       const isOrigin = mode === 'origin'
       const [src, setSrc] = useState(isOrigin ? null : fallbackUrl)
       useEffect(() => {
@@ -676,7 +731,40 @@ window.__ModuleLoader__.load({
           if (currentUrl) URL.revokeObjectURL(currentUrl)
         }
       }, [isOrigin, fallbackUrl, reloadKey])
-      return h('img', { className: 'gp-shot', src: src ?? undefined, alt: alt ?? 'game window', onError })
+      const live_ = interaction && interaction.enabled
+      const norm = (event) => {
+        const rect = event.currentTarget.getBoundingClientRect()
+        if (!rect.width || !rect.height) return { x: 0, y: 0 }
+        return {
+          x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+          y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+        }
+      }
+      return h('img', {
+        className: 'gp-shot',
+        src: src ?? undefined,
+        alt: alt ?? 'game window',
+        onError,
+        'data-interactive': live_ ? '1' : '0',
+        tabIndex: live_ ? 0 : -1,
+        onMouseMove: live_ ? (event) => interaction.send({ type: 'move', ...norm(event) }) : undefined,
+        onMouseDown: live_ ? (event) => { event.preventDefault(); interaction.send({ type: 'down', ...norm(event), button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left' }) } : undefined,
+        onMouseUp: live_ ? (event) => { event.preventDefault(); interaction.send({ type: 'up', ...norm(event), button: event.button === 2 ? 'right' : event.button === 1 ? 'middle' : 'left' }) } : undefined,
+        onContextMenu: live_ ? (event) => event.preventDefault() : undefined,
+        onWheel: live_ ? (event) => { event.preventDefault(); interaction.send({ type: 'wheel', delta: event.deltaY < 0 ? 120 : -120 }) } : undefined,
+        onKeyDown: live_ ? (event) => {
+          const vk = virtualKey(event.key)
+          if (!vk) return
+          event.preventDefault()
+          interaction.send({ type: 'key', vk, down: true })
+        } : undefined,
+        onKeyUp: live_ ? (event) => {
+          const vk = virtualKey(event.key)
+          if (!vk) return
+          event.preventDefault()
+          interaction.send({ type: 'key', vk, down: false })
+        } : undefined,
+      })
     }
 
     /**
@@ -743,6 +831,7 @@ window.__ModuleLoader__.load({
       const [manualUrl, setManualUrl] = useState('')
       const [immersive, setImmersive] = useState(false)
       const [crop, setCrop] = useState({ mode: false, rect: null })
+      const [pointerMode, setPointerMode] = useState(false)
       const [windows, setWindows] = useState(null)
       const [roots, setRoots] = useState(null)
       const [winBusy, setWinBusy] = useState(false)
@@ -897,6 +986,35 @@ window.__ModuleLoader__.load({
           setBusy(false)
         }
       }, [])
+
+      const lastMove = useRef(0)
+      const sendInput = useCallback((event) => {
+        const now = Date.now()
+        if (event.type === 'move' && now - lastMove.current < 45) return
+        lastMove.current = now
+        // fire and forget: input must not queue behind a slow request
+        void call('/api/input', { method: 'POST', body: JSON.stringify(event) }).catch(() => {})
+      }, [])
+
+      useEffect(() => {
+        if (!pointerMode) return undefined
+        const onKey = (event) => {
+          if (event.key === 'Escape') {
+            setPointerMode(false)
+            return
+          }
+          const vk = virtualKey(event.key)
+          if (!vk) return
+          event.preventDefault()
+          sendInput({ type: 'key', vk, down: event.type === 'keydown' })
+        }
+        window.addEventListener('keydown', onKey)
+        window.addEventListener('keyup', onKey)
+        return () => {
+          window.removeEventListener('keydown', onKey)
+          window.removeEventListener('keyup', onKey)
+        }
+      }, [pointerMode, sendInput])
 
       const openPicker = useCallback(async () => {
         setWinBusy(true)
@@ -1063,6 +1181,7 @@ window.__ModuleLoader__.load({
                         reloadKey,
                         alt: active?.windowTitle ?? 'game window',
                         onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
+                        interaction: { enabled: pointerMode, send: sendInput },
                       })))
                 : h(DeviceFrame, { viewport },
                     h(WindowStage, {
@@ -1072,6 +1191,7 @@ window.__ModuleLoader__.load({
                       reloadKey,
                       alt: active?.windowTitle ?? 'game window',
                       onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
+                      interaction: { enabled: pointerMode, send: sendInput },
                     })),
               crop.mode
                 ? h(CropOverlay, {
@@ -1207,6 +1327,14 @@ window.__ModuleLoader__.load({
             title: preset.width ? `${preset.width}×${preset.height}` : '铺满舞台',
             onClick: () => setViewport(key),
           }, preset.label)),
+          isWindow
+            ? h('button', {
+                className: 'gp-btn',
+                'data-primary': pointerMode ? '1' : '0',
+                title: pointerMode ? '正在转发鼠标/键盘（Esc 退出）' : '把鼠标和键盘转发给这个窗口，直接在面板里玩',
+                onClick: () => setPointerMode((on) => !on),
+              }, pointerMode ? '🖱 操作中' : '🖱 操作')
+            : null,
           isWindow
             ? h('button', {
                 className: 'gp-btn',
