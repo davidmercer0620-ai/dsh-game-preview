@@ -5,7 +5,7 @@
         port: 7317
         waitForMs: 60000
         wechatCli: ''
-        cocosEditor: ''
+        cocosEditor: 'D:/tools/cocos/CocosCreator.exe'
         godotExe: ''
         unityExe: ''
         captureFps: 20

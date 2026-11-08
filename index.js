@@ -415,6 +415,38 @@ function detect(root) {
   } catch {
     subdirs = []
   }
+
+  // Engine build outputs sit under <project>/build/<platform>/index.html, and the
+  // engine project itself is often a subdirectory (F:\game\cocos\build\web-desktop).
+  function scanBuilds(prefix) {
+    for (const base of ['build', 'build-results', 'dist', 'out']) {
+      const baseRel = prefix ? `${prefix}/${base}` : base
+      if (!has(root, baseRel)) continue
+      let children = []
+      try {
+        children = readdirSync(join(root, baseRel)).filter((name) => !name.startsWith('.'))
+      } catch {
+        continue
+      }
+      for (const child of children) {
+        const rel = `${baseRel}/${child}`
+        if (!has(root, `${rel}/index.html`)) continue
+        add({
+          id: `static@${rel}`,
+          dir: rel,
+          kind: 'web',
+          title: `构建产物 · ${child}${prefix ? `（${prefix}）` : ''}`,
+          detail: 'Cocos / 引擎导出的网页包',
+          file: 'index.html',
+          estimatedMs: 200,
+          reload: 'manual',
+        })
+      }
+    }
+  }
+
+  scanBuilds('')
+
   for (const name of subdirs) {
     const dir = join(root, name)
     let stat = null
@@ -426,6 +458,7 @@ function detect(root) {
     if (!stat.isDirectory()) continue
     const pkg = has(dir, 'package.json') ? safeJson(join(dir, 'package.json')) : null
     for (const cfg of configsAt(dir, name.split(sep).join('/'), pkg)) add(cfg)
+    scanBuilds(name.split(sep).join('/'))
   }
 
   if (!configs.length) {
@@ -653,9 +686,17 @@ export function apply(ctx, config = {}) {
     return child
   }
 
+  /** Engine editors are Electron apps: never hand them ELECTRON_RUN_AS_NODE. */
+  function engineEnv() {
+    const env = { ...process.env }
+    delete env.ELECTRON_RUN_AS_NODE
+    delete env.ELECTRON_NO_ATTACH_CONSOLE
+    return env
+  }
+
   /** Spawn an engine executable without a shell so `child.pid` owns the game window. */
   function spawnDirect(exe, args, cwd, label) {
-    const child = spawn(exe, args, { cwd, shell: false, windowsHide: false, detached: false })
+    const child = spawn(exe, args, { cwd, shell: false, windowsHide: false, detached: false, env: engineEnv() })
     proc.child = child
     proc.config = { title: label }
     proc.exe = exe
@@ -1259,6 +1300,10 @@ export function apply(ctx, config = {}) {
       try {
         moduleEntry = /<script[^>]+type\s*=\s*["']module/i.test(readFileSync(entryAbs, 'utf8').slice(0, 20000))
       } catch {}
+      // engine builds load their asset bundles at runtime; inlining them would
+      // produce a page that renders nothing, so they always use the served URL
+      const engineBuild = has(workdir, 'assets') || has(workdir, 'cocos-js') || has(workdir, 'application.js')
+      const bundleSafe = !moduleEntry && !engineBuild
       state.active = {
         id: cfg.id, title: cfg.title, kind: 'file',
         url: `${originOf()}/static/${staticToken(serveRoot)}/${entryPath.split('/').map(encodeURIComponent).join('/')}`,
@@ -1266,9 +1311,9 @@ export function apply(ctx, config = {}) {
         // the desktop page cannot reach the loopback server at all. ES modules
         // with relative imports cannot survive inlining, so those keep the
         // served URL only.
-        ...(moduleEntry
-          ? {}
-          : { bundlePath: `${API_PREFIX}/bundle?root=${encodeURIComponent(workdir)}&file=${encodeURIComponent(cfg.file)}` }),
+        ...(bundleSafe
+          ? { bundlePath: `${API_PREFIX}/bundle?root=${encodeURIComponent(workdir)}&file=${encodeURIComponent(cfg.file)}` }
+          : {}),
         startedAt: Date.now(),
       }
       return { ...snapshot(state.lastRoot), waitedMs: 0 }
