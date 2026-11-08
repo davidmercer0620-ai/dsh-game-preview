@@ -14,14 +14,16 @@
 if (!window.__dshGamePreviewModuleRegistered) {
   window.__dshGamePreviewModuleRegistered = true
 window.__ModuleLoader__.load({
-  id: 'dsh-game-preview',
+  id: '@davidmercer0620-ai/dsh-game-preview',
   factory(require) {
     const React = require('react')
     const h = React.createElement
     const { useCallback, useEffect, useMemo, useRef, useState } = React
 
     const KIND = 'game-preview'
-    const ID = 'dsh-game-preview'
+    // the module id must match the package name, or the host builds a second
+    // client entry for the short loader row id and rejects the duplicate
+    const ID = '@davidmercer0620-ai/dsh-game-preview'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.

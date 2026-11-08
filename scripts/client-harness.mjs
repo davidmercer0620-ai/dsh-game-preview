@@ -47,7 +47,7 @@ new Function('window', code)(win)
 
 if (modules.length !== 1) throw new Error(`expected one module registration, got ${modules.length}`)
 const mod = modules[0]
-if (mod.id !== 'dsh-game-preview') throw new Error(`unexpected module id: ${mod.id}`)
+if (mod.id !== '@davidmercer0620-ai/dsh-game-preview') throw new Error(`module id must equal the package name, got: ${mod.id}`)
 
 /* ------------------------------------------------------------- fake context */
 
