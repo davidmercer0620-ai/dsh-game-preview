@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.5.5 — 2026-11-09
+
+封包导出：
+
+- 📦 导出面板：Web zip / Android APK / Windows EXE，带工具链就绪状态
+- 工具链探测覆盖 Windows 的真实安装位置（JDK、Android SDK、Gradle wrapper、VS/CMake）
+- APK 走项目自带的 `android/` 外壳（`build.sh` 或 `gradle assembleDebug`），自动注入 `JAVA_HOME` / `ANDROID_HOME` / `GRADLE_BIN`
+- 构建参数（KEY=VALUE）按项目记忆，例如 `ZAOWU_SRC=index_v5_0.html`
+- 进度日志、产物路径与「打开目录」
+
+实测：`F:\造化万物3` 用该流程打出 6.5 MB 的 APK（BUILD SUCCESSFUL，1m20s）。
+
 ## 0.5.0 — 2026-11-08
 
 发布准备版本。功能面：

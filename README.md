@@ -36,6 +36,7 @@ Every engine has one loop that is faster than all the others. The panel picks th
 | **Auto start** | Opening the tab restores the last window or config for that project and starts it |
 | **Dirty counter** | Saving does not reload; the panel shows how many changes are waiting, then one click reruns |
 | **Agent tools** | `game_preview_run` / `game_preview_status` / `game_preview_stop` / `game_preview_windows` |
+| **Package the game** | 📦 exports a Web zip, an Android APK (reusing the project's own `android/` shell), or a Windows EXE when the toolchain exists |
 | **Hotkeys** | `F` full-bleed · `R` reload · `Esc` leave |
 
 ## Install
@@ -64,6 +65,20 @@ Then reload the page (Ctrl+R): a ▶ button appears next to the session title, a
 3. The panel auto-detects the engine and starts the fastest loop.
 4. Edit code — the counter says `●3`; press ▶ or let the agent call `game_preview_run`.
 5. For Unity: press Play once in the editor, hit ✂ to crop the Game view, then 🖱 to play right there.
+
+## Packaging
+
+The 📦 导出 button opens three targets and shows live readiness for each:
+
+| Target | What it does | Needs |
+|---|---|---|
+| Web zip | zips the detected static build into `<project>/dist` | nothing |
+| Android APK | runs the project's own `android/build.sh` (or `gradle assembleDebug`) with `JAVA_HOME`/`ANDROID_HOME` injected, then copies the APK to `dist/` | JDK 17 + Android SDK + Gradle + an `android/` Gradle project |
+| Windows EXE | builds the Cocos `windows` platform and copies the `.exe` | Visual Studio C++ + CMake + Cocos Creator |
+
+Toolchain paths are discovered where Windows actually keeps them (`JAVA_HOME`, `D:/Android/sdk`, `D:/jdk*`, `%USERPROFILE%/.gradle/wrapper/dists`, `Program Files\\Java`), not just `PATH`.
+
+Projects that pick their entry file by environment variable can use **构建参数…** (e.g. `ZAOWU_SRC=index_v5_0.html`); it is remembered per project.
 
 ## Configuration
 

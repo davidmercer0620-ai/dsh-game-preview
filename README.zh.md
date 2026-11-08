@@ -65,6 +65,20 @@ plugin_manager install_bundle(target: "C:\\path\\to\\dsh-game-preview")
 4. 改代码——计数显示 `●3`，按 ▶ 或让 agent 调 `game_preview_run`
 5. Unity：在编辑器里按一次 Play，用 ✂ 裁出 Game 视图，再点 🖱 直接玩
 
+## 封包
+
+底栏 **📦 导出** 有三个目标，每个都显示就绪状态：
+
+| 目标 | 做什么 | 需要 |
+|---|---|---|
+| Web 包 | 把构建产物打成 zip 放进 `<项目>/dist` | 什么都不用 |
+| Android APK | 跑项目自带的 `android/build.sh`（或 `gradle assembleDebug`），自动注入 `JAVA_HOME` / `ANDROID_HOME` / `GRADLE_BIN` | JDK 17 + Android SDK + Gradle + `android/` 工程 |
+| Windows EXE | 构建 Cocos `windows` 平台并复制 exe | VS C++ + CMake + Cocos Creator |
+
+工具链按 Windows 的真实安装位置探测（`JAVA_HOME`、`D:/Android/sdk`、`D:/jdk*`、`%USERPROFILE%/.gradle/wrapper/dists`、`Program Files\\Java`），不只看 `PATH`。
+
+用环境变量选入口的工程可以在 **构建参数…** 里填 KEY=VALUE（例如 `ZAOWU_SRC=index_v5_0.html`），按项目记忆。
+
 ## 配置
 
 在 profile 的 `cordis.patch.yml` 里改对应行：
