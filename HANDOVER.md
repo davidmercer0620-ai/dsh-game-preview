@@ -337,3 +337,15 @@ client-harness：窗口舞台在两种传输下都能渲染
 - 拼起来成了 `/api/game-preview/api/state` → 404
 
 修法：`call()` 里先去掉路径里的 `/api` 前缀再拼 base；同时在 `client-harness.mjs` 加源码级回归检查（所有 `call('/api/...')` + 必须有 strip 逻辑），这类"两条通道拼接不一致"的问题不会再静默复发。
+
+### 追加（v0.3.4）：探测器把面板挂死了
+
+面板停在「正在连接宿主…」——不是被拒绝，是**请求一直挂着**：桌面端 preload 接管 `fetch` 后，对非同源 URL 既不 resolve 也不 reject；旧探测器是串行 await、没有超时，于是第一条就把整个 probe 卡死了，四条路径一条都没机会跑。
+
+修法：
+- 每个候选（同源 XHR / 16 个回环 XHR / 同源 fetch / 16 个回环 fetch）都有 **1.5s 硬超时**
+- **4 路并发**扫描，谁先回应谁赢
+- XHR 放在最前面（preload 换的是 fetch，不是 XMLHttpRequest）
+- 拿到的 `transport` 记在 health 里，状态行会标 `(xhr)`
+
+**教训：在会被中间层接管的运行时里，任何网络探测都必须自带超时，并且"失败"必须包含"没回应"。**

@@ -88,6 +88,34 @@ window.__ModuleLoader__.load({
       })
     }
 
+    function withTimeout(promise, ms, label) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error(`${label} 超时 ${ms}ms`)), ms)
+        promise.then(
+          (value) => { clearTimeout(timer); resolve(value) },
+          (error) => { clearTimeout(timer); reject(error) },
+        )
+      })
+    }
+
+    function probeOnce(target, via, timeoutMs) {
+      const work = (async () => {
+        if (via === 'xhr') {
+          const res = await xhrJson(target)
+          return res.body
+        }
+        const controller = new AbortController()
+        const timer = setTimeout(() => controller.abort(), timeoutMs)
+        try {
+          const res = await fetch(target, { headers: { 'x-game-preview': '1' }, signal: controller.signal })
+          return await res.json()
+        } finally {
+          clearTimeout(timer)
+        }
+      })()
+      return withTimeout(work, timeoutMs, `${via} ${target.slice(0, 40)}`)
+    }
+
     async function httpJson(url, init = {}) {
       if (transport === 'xhr') {
         const res = await xhrJson(url, init)
@@ -108,76 +136,76 @@ window.__ModuleLoader__.load({
     async function probe() {
       if (endpoint) return endpoint
 
-      // 1) the Harness origin itself (same-origin route registered by the Host).
-      // Try the relative form and the absolute origin form: the desktop page may
-      // be file:// where a leading slash no longer resolves.
-      // The desktop preload patches fetch by looking at the literal "/api" prefix,
-      // so never resolve this to an absolute URL before calling fetch.
-      const originAttempts = [`${API}/hello`]
-      try {
-        const origin = window.location?.origin
-        if (origin && origin !== 'null' && /^https?:/.test(origin)) originAttempts.push(`${origin}${API}/hello`)
-      } catch {}
-      const originNotes = []
-      for (const target of originAttempts) {
-        for (const via of ['fetch', 'xhr']) {
+      // The desktop shell can hold a patched fetch open forever, so every
+      // candidate gets a hard deadline. XHR is tried first: the shell patches
+      // fetch, not XMLHttpRequest, and the game iframe proves loopback works.
+      const selfOrigin = (() => {
+        try {
+          const origin = window.location?.origin
+          return origin && origin !== 'null' && /^https?:/.test(origin) ? origin : null
+        } catch {
+          return null
+        }
+      })()
+
+      const deadline = 1500
+      const candidates = [
+        { mode: 'origin', via: 'xhr', url: `${API}/hello` },
+        ...PORTS.map((port) => ({ mode: 'loopback', via: 'xhr', port, url: `http://127.0.0.1:${port}/api/hello` })),
+        ...(selfOrigin ? [{ mode: 'origin', via: 'fetch', url: `${selfOrigin}${API}/hello` }] : []),
+        { mode: 'origin', via: 'fetch', url: `${API}/hello` },
+        ...PORTS.map((port) => ({ mode: 'loopback', via: 'fetch', port, url: `http://127.0.0.1:${port}/api/hello` })),
+      ]
+
+      const notes = []
+      let cursor = 0
+      // Bounded concurrency: enough to beat one hanging transport, small enough
+      // not to hammer 16 ports on every mount.
+      const worker = async () => {
+        while (cursor < candidates.length) {
+          const index = cursor++
+          const candidate = candidates[index]
           try {
-            const body = via === 'xhr'
-              ? (await xhrJson(target)).body
-              : await (await fetch(target, { headers: { 'x-game-preview': '1' } })).json()
+            const body = await probeOnce(candidate.url, candidate.via, deadline)
             if (body?.app === APP) {
-              endpoint = API
-              transport = via
-              health = { port: null, version: body.version ?? null, error: null, mode: 'origin' }
-              return endpoint
+              endpoint = candidate.mode === 'origin' ? API : `http://127.0.0.1:${candidate.port}/api`
+              transport = candidate.via
+              health = {
+                port: candidate.port ?? null,
+                version: body.version ?? null,
+                error: null,
+                mode: candidate.mode,
+              }
+              return true
             }
-            originNotes.push(`${target}[${via}] → app=${body?.app ?? '?'}`)
+            notes.push(`${candidate.url.slice(0, 46)}[${candidate.via}] → app=${body?.app ?? '?'}`)
           } catch (error) {
-            originNotes.push(`${target}[${via}] → ${String(error?.message ?? error).slice(0, 50)}`)
+            notes.push(`${candidate.url.slice(0, 46)}[${candidate.via}] → ${String(error?.message ?? error).slice(0, 44)}`)
           }
         }
+        return false
       }
 
-      // 2) the loopback control API (web GUI without the same-origin bridge)
-      const loopbackNotes = []
-      for (const port of PORTS) {
-        for (const via of ['fetch', 'xhr']) {
-          try {
-            const url = `http://127.0.0.1:${port}/api/hello`
-            const body = via === 'xhr'
-              ? (await xhrJson(url)).body
-              : await (await fetch(url, { headers: { 'x-game-preview': '1' } })).json()
-            if (body?.app === APP) {
-              endpoint = `http://127.0.0.1:${port}/api`
-              transport = via
-              health = { port, version: body.version ?? null, error: null, mode: 'loopback' }
-              return endpoint
-            }
-            loopbackNotes.push(`:${port}[${via}] → app=${body?.app ?? '?'}`)
-          } catch (error) {
-            if (port === PORTS[0]) loopbackNotes.push(`:${port}[${via}] → ${String(error?.message ?? error).slice(0, 40)}`)
-          }
-        }
+      const workers = Array.from({ length: 4 }, () => worker())
+      const results = await Promise.all(workers)
+      if (results.some(Boolean)) return endpoint
+
+      health = {
+        port: null,
+        version: null,
+        error: '宿主未响应：所有传输都没通',
+        mode: null,
+        attempts: notes.slice(0, 8),
       }
       return null
     }
 
     async function call(path, init = {}) {
       const base = await probe()
+      if (!base) throw new Error(health.error ?? '宿主未响应：预览服务没有启动')
       // call sites use the loopback shape ('/api/state'); a same-origin base
       // already ends in /api/game-preview, so drop the duplicated prefix
       const rel = path.startsWith('/api/') ? path.slice('/api'.length) : path
-      if (!base) {
-        const notes = [...originNotes, ...loopbackNotes]
-        health = {
-          port: null,
-          version: null,
-          error: '宿主未响应：所有传输都没通',
-          mode: null,
-          attempts: notes.slice(0, 8),
-        }
-        throw new Error('宿主未响应：预览服务没有启动')
-      }
       return httpJson(base + rel, init)
     }
 
