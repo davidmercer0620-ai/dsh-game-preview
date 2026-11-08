@@ -18,7 +18,7 @@
     "cordis.patch.yml",
     "locale/*.json",
     "icon.svg",
-    "README.md",
+    "README*.md",
     "CHANGELOG.md",
     "LICENSE"
   ],
@@ -49,5 +49,13 @@
   "license": "MIT",
   "engines": {
     "node": ">=22"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/davidmercer0620-ai/dsh-game-preview.git"
+  },
+  "homepage": "https://github.com/davidmercer0620-ai/dsh-game-preview#readme",
+  "bugs": {
+    "url": "https://github.com/davidmercer0620-ai/dsh-game-preview/issues"
   }
 }
