@@ -21,9 +21,9 @@ window.__ModuleLoader__.load({
     const { useCallback, useEffect, useMemo, useRef, useState } = React
 
     const KIND = 'game-preview'
-    // the module id must match the package name, or the host builds a second
-    // client entry for the short loader row id and rejects the duplicate
-    const ID = '@davidmercer0620-ai/dsh-game-preview'
+    // the tab id must stay stable: sessions persist the open tab by id, and a
+    // renamed id leaves an empty pane behind (the module id is the scoped name)
+    const ID = 'dsh-game-preview'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
