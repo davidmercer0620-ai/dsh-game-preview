@@ -394,12 +394,15 @@ function configsAt(dir, rel, pkg) {
   // Generic node dev server, including serve/preview style scripts
   const script = pickScript(pkg)
   if (script) {
+    const scriptFile = /node\s+(?:\.\/)?([\w./-]+\.(?:mjs|js|cjs))/.exec(String(script.body ?? ''))?.[1]
+    const missing = scriptFile && !has(dir, scriptFile) ? scriptFile : null
     out.push({
       id: rel === '.' ? 'node-dev' : `node-dev@${rel}`,
       dir: dirField,
       kind: 'web',
       title: `Web · ${script.name}${label}`,
-      detail: `npm run ${script.name}`,
+      detail: missing ? `脚本缺失：${missing}` : `npm run ${script.name}`,
+      ...(missing ? { missing } : {}),
       url: guessDevUrl(dir, pkg, script),
       cmd: `npm run ${script.name}`,
       estimatedMs: 5000,
@@ -1323,6 +1326,10 @@ export function apply(ctx, config = {}) {
         url: null, projectPath, startedAt: Date.now(),
       }
       return { ...snapshot(state.lastRoot), waitedMs: 0, external: true }
+    }
+
+    if (cfg.missing) {
+      throw new Error(`npm run ${cfg.title} 指向的 ${cfg.missing} 不存在：先把这个脚本写出来，或用别的配置`)
     }
 
     // web

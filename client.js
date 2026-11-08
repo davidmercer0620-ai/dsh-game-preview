@@ -298,12 +298,22 @@ window.__ModuleLoader__.load({
     }
 
     async function call(path, init = {}) {
-      const base = await probe()
+      let base = await probe()
       if (!base) throw new Error(health.error ?? '宿主未响应：预览服务没有启动')
       // call sites use the loopback shape ('/api/state'); a same-origin base
       // already ends in /api/game-preview, so drop the duplicated prefix
       const rel = path.startsWith('/api/') ? path.slice('/api'.length) : path
-      return httpJson(base + rel, init)
+      try {
+        return await httpJson(base + rel, init)
+      } catch (error) {
+        // the Host may have restarted under us; re-discover once before failing
+        const message = String(error?.message ?? error)
+        if (!/超时|网络错误|未连接|Failed|fetch|bridge/i.test(message)) throw error
+        endpoint = null
+        base = await probe()
+        if (!base) throw error
+        return httpJson(base + rel, init)
+      }
     }
 
     /* ------------------------------------------------------------ styles */
