@@ -168,7 +168,7 @@ const windowSnap = {
   capture: { supported: true, running: true, fps: 24.5, width: 1280, height: 720, stale: false, error: null, errorCode: null, black: 0 },
 }
 // useState order in Panel: snap, error, busy, reloadKey, width, manualRoot, rootOverride, manualUrl, windows, roots, winBusy
-react.__states = [windowSnap, null, false, 0, 0, '', '', '', null, null, false]
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', null, null, false]
 const windowTree = body.component({})
 const shots = []
 const badges = []
@@ -184,11 +184,28 @@ if (!badges.some((b) => b.includes('fps'))) throw new Error(`window stage render
 
 // a stale capture must show the disconnect badge rather than a silent freeze
 const staleSnap = { ...windowSnap, capture: { ...windowSnap.capture, fps: 0, stale: true } }
-react.__states = [staleSnap, null, false, 0, 0, '', '', '', null, null, false]
+react.__states = [staleSnap, null, false, 0, 'auto', '', '', '', null, null, false]
 const staleTree = body.component({})
 const staleBadges = []
 walk(staleTree, (n) => { if (typeof n.children?.[0] === 'string' && n.children[0] === '已断流') staleBadges.push(n.children[0]) })
 if (!staleBadges.length) throw new Error('a stale capture must show the 已断流 badge')
+
+// PC / phone / auto previews: three explicit buttons, and the stage box follows
+const viewportLabels = []
+walk(windowTree, (n) => {
+  const label = typeof n.children?.[0] === 'string' ? n.children[0] : ''
+  if (['自适应', 'PC', '手机'].includes(label)) viewportLabels.push(label)
+})
+if (viewportLabels.length !== 3) throw new Error('expected 自适应 / PC / 手机 buttons, got: ' + viewportLabels.join(','))
+
+const vpBoxes = []
+walk(windowTree, (n) => {
+  if (typeof n.props?.className === 'string' && n.props.className === 'gp-vp') vpBoxes.push(n.props['data-vp'])
+})
+if (vpBoxes[0] !== 'auto') throw new Error('stage box did not follow the auto viewport: ' + vpBoxes[0])
+
+const pickerTreeForVp = body.component({})
+void pickerTreeForVp
 
 // the workspace chip shows the directory the Host resolved, so a fresh session
 // can tell it auto-detected the right project instead of guessing
@@ -200,7 +217,7 @@ walk(windowTree, (n) => {
 if (!dirChips.length) throw new Error('panel did not render a workspace directory chip')
 
 // the window picker renders one option per capturable window
-react.__states = [windowSnap, null, false, 0, 0, '', '', '', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
+react.__states = [windowSnap, null, false, 0, 'pc', '', '', '', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
 const pickerTree = body.component({})
 let pickerOptions = 0
 walk(pickerTree, (n) => { if (n.type === 'select') pickerOptions = (n.children ?? []).length })
@@ -209,7 +226,7 @@ if (pickerOptions < 2) throw new Error('window picker rendered no window options
 // no workspace known yet: the panel must offer the discovered directories
 // instead of a dead end that says "nothing detected"
 const noRootSnap = { root: null, configs: [], active: null, dirty: [], running: false, capture: { supported: true } }
-react.__states = [noRootSnap, null, false, 0, 0, '', '', '', null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
+react.__states = [noRootSnap, null, false, 0, 'auto', '', '', '', null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
 const noRootTree = body.component({})
 const rootOptions = []
 walk(noRootTree, (n) => {

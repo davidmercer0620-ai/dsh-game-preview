@@ -22,8 +22,14 @@ window.__ModuleLoader__.load({
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
     const API = '/api/game-preview'
     const PORTS = Array.from({ length: 16 }, (_, i) => 7317 + i)
-    const WIDTHS = ['100%', '768px', '375px']
-    const WIDTH_KEY = 'dsh-game-preview.width'
+    const WIDTH_KEY = 'dsh-game-preview.viewport'
+    // PC and phone previews differ in both size and aspect, so they get their
+    // own stage boxes instead of a single width number.
+    const VIEWPORTS = {
+      auto: { label: '自适应' },
+      pc: { label: 'PC', width: 1280, height: 720, ratio: '16 / 9' },
+      mobile: { label: '手机', width: 390, height: 844, ratio: '390 / 844' },
+    }
     const ROOT_KEY = 'dsh-game-preview.root'
 
     function readStoredRoot() {
@@ -138,8 +144,11 @@ window.__ModuleLoader__.load({
       .gp-chip[data-on="1"]{background:color-mix(in srgb, currentColor 12%, transparent);border-color:color-mix(in srgb, currentColor 30%, transparent)}
       .gp-chip[data-dim="1"]{opacity:.45;cursor:not-allowed}
       .gp-stage{position:relative;flex:1;min-height:0;display:flex;align-items:stretch;justify-content:center;background:color-mix(in srgb, currentColor 4%, transparent);overflow:hidden}
+      .gp-vp{display:flex;align-items:center;justify-content:center;width:100%;height:100%;padding:10px;box-sizing:border-box;min-height:0}
+      .gp-vp[data-vp="pc"] .gp-frame{height:100%;width:auto;aspect-ratio:16 / 9;max-width:100%;border-radius:8px;box-shadow:0 0 0 1px color-mix(in srgb, currentColor 18%, transparent)}
+      .gp-vp[data-vp="mobile"] .gp-frame{width:min(100%,390px);height:auto;aspect-ratio:390 / 844;max-height:100%;border-radius:18px;box-shadow:0 0 0 1px color-mix(in srgb, currentColor 22%, transparent), 0 10px 30px rgba(0,0,0,.35)}
+      .gp-vp[data-vp="pc"] .gp-shot,.gp-vp[data-vp="mobile"] .gp-shot{border-radius:8px}
       .gp-frame{width:100%;height:100%;border:0;background:#000;display:block}
-      .gp-frame[data-narrow="1"]{margin:8px 0;border-radius:10px;box-shadow:0 0 0 1px color-mix(in srgb, currentColor 18%, transparent);height:calc(100% - 16px)}
       .gp-shot{width:100%;height:100%;object-fit:contain;background:#000;display:block;image-rendering:auto}
       .gp-live{position:absolute;left:8px;top:8px;display:flex;gap:6px;align-items:center;pointer-events:none;font-size:10px}
       .gp-live span{background:rgba(12,12,14,.72);color:#eee;border-radius:999px;padding:2px 8px;backdrop-filter:blur(4px)}
@@ -220,7 +229,7 @@ window.__ModuleLoader__.load({
      * from a blob URL (a file:// host cannot reach the loopback server), and
      * fall back to the served directory URL when bundling is unavailable.
      */
-    function GameStage({ bundlePath, fallbackUrl, reloadKey, width, title }) {
+    function GameStage({ bundlePath, fallbackUrl, reloadKey, viewport, title }) {
       // without a bundle the served URL can render right away
       const [src, setSrc] = useState(bundlePath ? null : fallbackUrl)
       useEffect(() => {
@@ -249,11 +258,10 @@ window.__ModuleLoader__.load({
 
       if (!src) return h('div', { className: 'gp-empty' }, h('div', { className: 'gp-note' }, '正在打包游戏…'))
       return h('iframe', {
-        key: `${src}#${width}`,
+        key: `${src}#${viewport}`,
         className: 'gp-frame',
+        'data-vp': viewport,
         src,
-        'data-narrow': width > 0 ? '1' : '0',
-        style: width > 0 ? { width: WIDTHS[width], maxWidth: '100%' } : undefined,
         title: title ?? 'game preview',
         sandbox: 'allow-scripts allow-pointer-lock allow-popups allow-modals',
         allow: 'autoplay; fullscreen; gamepad',
@@ -267,12 +275,12 @@ window.__ModuleLoader__.load({
       const [error, setError] = useState(null)
       const [busy, setBusy] = useState(false)
       const [reloadKey, setReloadKey] = useState(0)
-      const [width, setWidthState] = useState(() => {
+      const [viewport, setViewportState] = useState(() => {
         try {
-          const saved = Number(window.localStorage.getItem(WIDTH_KEY))
-          return Number.isFinite(saved) && saved >= 0 && saved < WIDTHS.length ? saved : 0
+          const saved = String(window.localStorage.getItem(WIDTH_KEY) ?? '')
+          return VIEWPORTS[saved] ? saved : 'auto'
         } catch {
-          return 0
+          return 'auto'
         }
       })
       const [manualRoot, setManualRoot] = useState('')
@@ -283,10 +291,10 @@ window.__ModuleLoader__.load({
       const [winBusy, setWinBusy] = useState(false)
       const alive = useRef(true)
 
-      const setWidth = useCallback((next) => {
-        setWidthState(next)
+      const setViewport = useCallback((next) => {
+        setViewportState(next)
         try {
-          window.localStorage.setItem(WIDTH_KEY, String(next))
+          window.localStorage.setItem(WIDTH_KEY, next)
         } catch {}
       }, [])
 
@@ -489,23 +497,25 @@ window.__ModuleLoader__.load({
       const stage = url
         ? isWindow
           ? h('div', { className: 'gp-stage' },
-              h(WindowStage, {
-                key: `${url}#${reloadKey}`,
-                mode: health.mode,
-                fallbackUrl: url,
-                reloadKey,
-                alt: active?.windowTitle ?? 'game window',
-                onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
-              }),
+              h('div', { className: 'gp-vp', 'data-vp': viewport },
+                h(WindowStage, {
+                  key: `${url}#${reloadKey}`,
+                  mode: health.mode,
+                  fallbackUrl: url,
+                  reloadKey,
+                  alt: active?.windowTitle ?? 'game window',
+                  onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
+                })),
               liveBadges.length ? h('div', { className: 'gp-live' }, liveBadges) : null)
           : h('div', { className: 'gp-stage' },
-              h(GameStage, {
-                bundlePath: active?.bundlePath,
-                fallbackUrl: url,
-                reloadKey,
-                width,
-                title: active?.title ?? 'game preview',
-              }))
+              h('div', { className: 'gp-vp', 'data-vp': viewport },
+                h(GameStage, {
+                  bundlePath: active?.bundlePath,
+                  fallbackUrl: url,
+                  reloadKey,
+                  viewport,
+                  title: active?.title ?? 'game preview',
+                })))
         : empty
 
       const blackHint = isWindow && capture?.errorCode === 'printwindow-failed'
@@ -588,7 +598,13 @@ window.__ModuleLoader__.load({
           h('button', { className: 'gp-btn', disabled: !url, onClick: () => setReloadKey((n) => n + 1) }, '⟳ 重载'),
           h('button', { className: 'gp-btn', disabled: busy || (!snap?.running && !capture?.running), onClick: () => void stop() }, '⏹ 停止'),
           h('span', { className: 'gp-spacer' }),
-          h('button', { className: 'gp-btn', disabled: !url || isWindow, onClick: () => setWidth((w) => (w + 1) % WIDTHS.length) }, WIDTHS[width]),
+          Object.entries(VIEWPORTS).map(([key, preset]) => h('button', {
+            key,
+            className: 'gp-btn',
+            'data-primary': viewport === key ? '1' : '0',
+            title: preset.width ? `${preset.width}×${preset.height}` : '铺满舞台',
+            onClick: () => setViewport(key),
+          }, preset.label)),
           h('button', { className: 'gp-btn', disabled: !url, onClick: () => url && window.open(url, '_blank', 'noopener') }, '↗ 外部')),
       )
     }
