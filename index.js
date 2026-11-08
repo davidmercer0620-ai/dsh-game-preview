@@ -1159,6 +1159,8 @@ export function apply(ctx, config = {}) {
             // keep Chinese project paths readable in the build output
             PYTHONUTF8: '1',
             PYTHONIOENCODING: 'utf-8',
+            // build.sh re-detects gradle itself and can pick an older dist
+            GRADLE_BIN: tools.gradle,
             ...runEnv,
           }
           exportPush(`JDK: ${tools.jdk}`)
