@@ -134,7 +134,10 @@ if (!types.includes('button')) throw new Error('header control rendered no butto
 /* ------------------------------------------- render the running stage state */
 
 react.__states = [{
-  configs: [{ id: 'static', kind: 'web', title: '静态 HTML' }],
+  configs: [
+    { id: 'static', kind: 'web', title: '静态 HTML' },
+    { id: 'node-dev', kind: 'web', title: 'Web · serve', detail: 'npm run serve' },
+  ],
   active: { id: 'static', kind: 'web', url: 'http://127.0.0.1:7317/file?root=x&path=index.html' },
   dirty: ['src/game.js'],
   running: true,
@@ -152,7 +155,7 @@ walk(running, (n) => {
 if (stageSrcs.length !== 1) throw new Error(`running state rendered ${stageSrcs.length} stages`)
 if (!dirtyText.length) throw new Error('running state rendered no dirty badge')
 if (!stageSrcs[0].startsWith('http://127.0.0.1:7317/file')) throw new Error('stage src is not the preview URL')
-if (!dirtyText[0].includes('1 处改动待运行')) throw new Error(`dirty badge text is wrong: ${dirtyText[0]}`)
+if (!dirtyText[0].includes('"1"')) throw new Error(`dirty badge should collapse to a count: ${dirtyText[0]}`)
 
 /* ---------------------------------------- render the window-capture stage (v0.2) */
 
@@ -167,8 +170,8 @@ const windowSnap = {
   running: true,
   capture: { supported: true, running: true, fps: 24.5, width: 1280, height: 720, stale: false, error: null, errorCode: null, black: 0 },
 }
-// useState order in Panel: snap, error, busy, reloadKey, width, manualRoot, rootOverride, manualUrl, windows, roots, winBusy
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', null, null, false]
+// useState order in Panel: snap, error, busy, reloadKey, viewport, manualRoot, rootOverride, manualUrl, immersive, windows, roots, winBusy
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, null, null, false]
 const windowTree = body.component({})
 const shots = []
 const badges = []
@@ -184,7 +187,7 @@ if (!badges.some((b) => b.includes('fps'))) throw new Error(`window stage render
 
 // a stale capture must show the disconnect badge rather than a silent freeze
 const staleSnap = { ...windowSnap, capture: { ...windowSnap.capture, fps: 0, stale: true } }
-react.__states = [staleSnap, null, false, 0, 'auto', '', '', '', null, null, false]
+react.__states = [staleSnap, null, false, 0, 'auto', '', '', '', false, null, null, false]
 const staleTree = body.component({})
 const staleBadges = []
 walk(staleTree, (n) => { if (typeof n.children?.[0] === 'string' && n.children[0] === '已断流') staleBadges.push(n.children[0]) })
@@ -217,7 +220,7 @@ walk(windowTree, (n) => {
 if (!dirChips.length) throw new Error('panel did not render a workspace directory chip')
 
 // the window picker renders one option per capturable window
-react.__states = [windowSnap, null, false, 0, 'pc', '', '', '', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
+react.__states = [windowSnap, null, false, 0, 'pc', '', '', '', false, [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
 const pickerTree = body.component({})
 let pickerOptions = 0
 walk(pickerTree, (n) => { if (n.type === 'select') pickerOptions = (n.children ?? []).length })
@@ -226,7 +229,7 @@ if (pickerOptions < 2) throw new Error('window picker rendered no window options
 // no workspace known yet: the panel must offer the discovered directories
 // instead of a dead end that says "nothing detected"
 const noRootSnap = { root: null, configs: [], active: null, dirty: [], running: false, capture: { supported: true } }
-react.__states = [noRootSnap, null, false, 0, 'auto', '', '', '', null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
+react.__states = [noRootSnap, null, false, 0, 'auto', '', '', '', false, null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
 const noRootTree = body.component({})
 const rootOptions = []
 walk(noRootTree, (n) => {
@@ -244,6 +247,28 @@ const callSites = [...code.matchAll(/call\('([^'?]+)/g)].map((m) => m[1])
 if (!callSites.length) throw new Error('no call sites found to check')
 const badSites = callSites.filter((path) => !path.startsWith('/api/'))
 if (badSites.length) throw new Error('call sites must use the /api/... shape: ' + badSites.join(','))
+
+// the config row must collapse to one primary action plus a compact "more" menu
+const primaryChips = []
+const moreMenus = []
+walk(running, (n) => {
+  if (typeof n.props?.className === 'string' && n.props.className.includes('gp-chip-primary')) primaryChips.push(n.props)
+  if (n.type === 'select' && String(n.props?.className ?? '').includes('gp-chip-select')) moreMenus.push(n)
+})
+if (primaryChips.length !== 1) throw new Error(`expected one primary config button, got ${primaryChips.length}`)
+if (moreMenus.length !== 1) throw new Error('expected one "other configs" menu')
+
+// immersive mode hides every control and floats a single exit pill
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', true, null, null, false]
+const immersiveTree = body.component({})
+const exitPills = []
+const chipRows = []
+walk(immersiveTree, (n) => {
+  if (typeof n.props?.className === 'string' && n.props.className.includes('gp-exit-full')) exitPills.push(n)
+  if (typeof n.props?.className === 'string' && n.props.className.includes('gp-chips')) chipRows.push(n)
+})
+if (exitPills.length !== 1) throw new Error('immersive mode renders no exit control')
+if (chipRows.length !== 0) throw new Error('immersive mode must hide the config row')
 
 console.log('modules   ', modules.map((m) => m.id).join(','))
 console.log('tab       ', tab.kind, '| title:', tab.title(), '| guide:', tab.guide.length)

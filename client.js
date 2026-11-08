@@ -325,6 +325,9 @@ window.__ModuleLoader__.load({
         border-radius:999px;padding:3px 10px;font-size:11px;cursor:pointer;white-space:nowrap}
       .gp-chip[data-on="1"]{background:color-mix(in srgb, currentColor 12%, transparent);border-color:color-mix(in srgb, currentColor 30%, transparent)}
       .gp-chip[data-dim="1"]{opacity:.45;cursor:not-allowed}
+      .gp-chip-primary{border-color:color-mix(in srgb, currentColor 34%, transparent);font-weight:600}
+      .gp-chip-select{appearance:none;padding-right:18px;background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
+        background-position:calc(100% - 9px) 50%,calc(100% - 5px) 50%;background-size:4px 4px,4px 4px;background-repeat:no-repeat}
       .gp-stage{position:relative;flex:1;min-height:0;display:flex;align-items:stretch;justify-content:center;background:color-mix(in srgb, currentColor 4%, transparent);overflow:hidden}
       .gp-vp{display:flex;align-items:center;justify-content:center;width:100%;height:100%;padding:10px;box-sizing:border-box;min-height:0}
       .gp-vp[data-vp="pc"] .gp-frame{height:100%;width:auto;aspect-ratio:16 / 9;max-width:100%;border-radius:8px;box-shadow:0 0 0 1px color-mix(in srgb, currentColor 18%, transparent)}
@@ -352,6 +355,12 @@ window.__ModuleLoader__.load({
       .gp-note{font-size:11px;opacity:.6;max-width:420px;line-height:1.6}
       .gp-err{color:#d9534f;font-size:11px;padding:6px 10px}
       .gp-attempts{font-size:10px;opacity:.65;padding:2px 10px 6px;line-height:1.6;word-break:break-all;max-height:110px;overflow:auto}
+      .gp-root[data-immersive="1"]{position:relative}
+      .gp-root[data-immersive="1"] .gp-stage{padding:0}
+      .gp-root[data-immersive="1"] .gp-vp{padding:0}
+      .gp-root[data-immersive="1"] .gp-frame,.gp-root[data-immersive="1"] .gp-shot{border-radius:0}
+      .gp-exit-full{position:absolute;right:10px;top:10px;z-index:5;font-size:11px;padding:3px 10px;border-radius:999px;
+        border:1px solid rgba(255,255,255,.25);background:rgba(12,12,14,.62);color:#eee;cursor:pointer;backdrop-filter:blur(4px)}
       .gp-health{display:flex;align-items:flex-start;gap:6px;justify-content:space-between;font-size:10px;opacity:.6;
         padding:4px 10px;border-bottom:1px solid color-mix(in srgb, currentColor 8%, transparent);word-break:break-all;line-height:1.5}
       .gp-hint{color:#c8892f;font-size:11px;padding:6px 10px}
@@ -469,6 +478,7 @@ window.__ModuleLoader__.load({
       const [manualRoot, setManualRoot] = useState('')
       const [rootOverride, setRootOverride] = useState(readStoredRoot)
       const [manualUrl, setManualUrl] = useState('')
+      const [immersive, setImmersive] = useState(false)
       const [windows, setWindows] = useState(null)
       const [roots, setRoots] = useState(null)
       const [winBusy, setWinBusy] = useState(false)
@@ -658,24 +668,60 @@ window.__ModuleLoader__.load({
       }, [snap, roots, winBusy, openRoots])
 
       const configs = snap?.configs ?? []
+
       const active = snap?.active ?? null
       const dirty = snap?.dirty ?? []
       const capture = snap?.capture ?? null
       const isWindow = active?.kind === 'window'
       const url = active?.url ?? null
+      // Build outputs beat dev servers beat engine editors beat the WeChat shell.
+      const rankOf = (cfg) => {
+        const id = String(cfg.id ?? '')
+        if (id.startsWith('static@')) return 0
+        if (id === 'static') return 1
+        if (id.startsWith('node-dev')) return 2
+        if (id.startsWith('cocos-web')) return 3
+        if (id.startsWith('wechat')) return 4
+        if (cfg.kind === 'native') return 5
+        return 9
+      }
+      const ordered = [...configs].sort((a, b) => rankOf(a) - rankOf(b))
+      const primaryCfg = active ? (configs.find((c) => c.id === active.id) ?? ordered[0]) : ordered[0]
       const canCapture = capture?.supported !== false
 
-      const chips = configs.map((cfg) => {
-        const dim = cfg.kind === 'native' && !canCapture
-        return h('button', {
-          key: cfg.id,
-          className: 'gp-chip',
-          'data-on': active?.id === cfg.id ? '1' : '0',
-          'data-dim': dim ? '1' : '0',
-          title: dim ? '窗口捕获只支持 Windows' : (cfg.url ?? cfg.detail ?? ''),
-          onClick: () => { if (!dim) void run(cfg.id) },
-        }, cfg.title)
-      })
+      const others = ordered.filter((cfg) => cfg.id !== primaryCfg?.id)
+      const chips = [
+        primaryCfg
+          ? h('button', {
+              key: 'primary',
+              className: 'gp-chip gp-chip-primary',
+              title: primaryCfg.url ?? primaryCfg.detail ?? '',
+              disabled: busy,
+              onClick: () => void run(primaryCfg.id),
+            }, `▶ ${primaryCfg.title.replace(/（.*?）/g, '')}`)
+          : null,
+        others.length
+          ? h('select', {
+              key: 'more',
+              className: 'gp-chip gp-chip-select',
+              title: `还有 ${others.length} 个配置`,
+              value: '',
+              disabled: busy,
+              onChange: (e) => {
+                if (e.target.value) {
+                  void run(e.target.value)
+                  e.target.value = ''
+                }
+              },
+            },
+              h('option', { value: '' }, `其他 ${others.length} 个…`),
+              others.map((cfg) => h('option', {
+                key: cfg.id,
+                value: cfg.id,
+                disabled: cfg.kind === 'native' && !canCapture,
+              }, cfg.title)))
+          : null,
+      ]
 
       const empty = !url
         ? h('div', { className: 'gp-empty' },
@@ -777,6 +823,17 @@ window.__ModuleLoader__.load({
             h('button', { className: 'gp-btn', onClick: () => setWindows(null) }, '取消'))
         : null
 
+      if (immersive) {
+        return h('div', { className: 'gp-root', 'data-immersive': '1' },
+          useStyles(),
+          stage,
+          h('button', {
+            className: 'gp-exit-full',
+            onClick: () => setImmersive(false),
+            title: '退出满屏',
+          }, '✕ 退出满屏'))
+      }
+
       return h('div', { className: 'gp-root' },
         useStyles(),
         h('div', { className: 'gp-chips' },
@@ -793,17 +850,19 @@ window.__ModuleLoader__.load({
               }, `📁 ${String(snap.root).split(/[\\/]/).filter(Boolean).pop() ?? snap.root} ▾`)
             : null,
           h('span', { className: 'gp-spacer' }),
-          h('span', { className: 'gp-dirty' },
-            dirty.length ? [h('span', { key: 'd', className: 'gp-dot' }), `${dirty.length} 处改动待运行`] : '已同步')),
+          h('span', { className: 'gp-dirty', title: dirty.length ? `待运行：${dirty.slice(0, 12).join('、')}${dirty.length > 12 ? ' …' : ''}` : '已同步' },
+            dirty.length ? [h('span', { key: 'd', className: 'gp-dot' }), `${dirty.length}`] : '')),
         rootPicker,
         picker,
-        h('div', { className: 'gp-health' },
+        !health.mode || error
+          ? h('div', { className: 'gp-health' },
           health.mode
             ? `宿主 v${health.version ?? '?'} · ${
                 health.mode === 'origin' ? '同源' : health.mode === 'bridge' ? `:${health.port}(iframe桥)` : ':' + health.port
               }${snap?.root ? ' · ' + snap.root : ''}`
             : (health.error ?? '正在连接宿主…'),
-          h('button', { className: 'gp-btn', disabled: busy, onClick: () => void reconnect() }, '重新连接')),
+            h('button', { className: 'gp-btn', disabled: busy, onClick: () => void reconnect() }, '重新连接'))
+          : null,
         error ? h('div', { className: 'gp-err' }, error) : null,
         !health.mode && health.attempts
           ? h('div', { className: 'gp-attempts' }, health.attempts.map((line, i) => h('div', { key: i }, line)))
@@ -826,6 +885,7 @@ window.__ModuleLoader__.load({
             title: preset.width ? `${preset.width}×${preset.height}` : '铺满舞台',
             onClick: () => setViewport(key),
           }, preset.label)),
+          h('button', { className: 'gp-btn', title: '隐藏所有控件，画面铺满', onClick: () => { setViewport('auto'); setImmersive(true) } }, '⛶ 满屏'),
           h('button', { className: 'gp-btn', disabled: !url, onClick: () => url && window.open(url, '_blank', 'noopener') }, '↗ 外部')),
       )
     }
