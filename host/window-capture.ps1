@@ -32,6 +32,20 @@ try { [Console]::OutputEncoding = $utf8 } catch {}
 
 Add-Type -AssemblyName System.Drawing
 
+$dpiAware = $false
+try {
+  Add-Type -TypeDefinition @'
+using System;
+using System.Runtime.InteropServices;
+public static class GpDpi {
+  [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+  [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+}
+'@
+  $dpiAware = [GpDpi]::SetProcessDpiAwarenessContext([IntPtr]::new(-4))
+  if (-not $dpiAware) { $dpiAware = [GpDpi]::SetProcessDPIAware() }
+} catch { $dpiAware = $false }
+
 Add-Type -ReferencedAssemblies System.Drawing -TypeDefinition @'
 using System;
 using System.Collections.Generic;
@@ -62,6 +76,9 @@ namespace GpCaptureHost {
     [DllImport("user32.dll")] public static extern bool PrintWindow(IntPtr hWnd, IntPtr hdc, uint flags);
     [DllImport("dwmapi.dll")] public static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out RECT value, int size);
     [DllImport("user32.dll")] public static extern bool GetWindowRect(IntPtr hWnd, out RECT rect);
+    [DllImport("user32.dll")] public static extern bool SetProcessDpiAwarenessContext(IntPtr context);
+    [DllImport("user32.dll")] public static extern bool SetProcessDPIAware();
+    [DllImport("user32.dll")] public static extern uint GetDpiForWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetForegroundWindow(IntPtr hWnd);
     [DllImport("user32.dll")] public static extern bool SetCursorPos(int x, int y);
     [DllImport("user32.dll")] public static extern void mouse_event(uint flags, int dx, int dy, int data, IntPtr extra);
@@ -242,6 +259,22 @@ namespace GpCaptureHost {
 
     public static void Key(int vk, bool down) {
       Native.keybd_event((byte)vk, 0, down ? 0u : Native.KEYEVENTF_KEYUP, IntPtr.Zero);
+    }
+
+    /** Bounds, the captured bitmap and SetCursorPos must all speak physical pixels. */
+    public static void BecomeDpiAware() {
+      // DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
+      try { if (Native.SetProcessDpiAwarenessContext(new IntPtr(-4))) return; } catch {}
+      try { Native.SetProcessDPIAware(); } catch {}
+    }
+
+    public static int DpiOf(IntPtr hwnd) {
+      try {
+        uint dpi = Native.GetDpiForWindow(hwnd);
+        return dpi > 0 ? (int)dpi : 96;
+      } catch {
+        return 96;
+      }
     }
 
     public static void Quit() {

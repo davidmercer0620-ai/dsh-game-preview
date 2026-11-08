@@ -25,6 +25,11 @@ window.__ModuleLoader__.load({
     const WIDTH_KEY = 'dsh-game-preview.viewport'
     // PC and phone previews differ in both size and aspect, so they get their
     // own stage boxes instead of a single width number.
+    const QUALITY = {
+      sharp: { label: '🎯 清晰', fps: 20, maxWidth: 0, quality: 72 },
+      smooth: { label: '⚡ 流畅', fps: 30, maxWidth: 1100, quality: 62 },
+    }
+
     const VIEWPORTS = {
       auto: { label: '自适应' },
       pc: { label: 'PC', width: 1280, height: 720, ratio: '16 / 9' },
@@ -412,7 +417,11 @@ window.__ModuleLoader__.load({
     const KEYS = {
       ArrowLeft: 0x25, ArrowUp: 0x26, ArrowRight: 0x27, ArrowDown: 0x28,
       Enter: 0x0d, Escape: 0x1b, ' ': 0x20, Spacebar: 0x20, Tab: 0x09,
-      Shift: 0x10, Control: 0x11, Alt: 0x12, Backspace: 0x08,
+      Shift: 0x10, Control: 0x11, Alt: 0x12, Backspace: 0x08, CapsLock: 0x14,
+      Home: 0x24, End: 0x23, PageUp: 0x21, PageDown: 0x22, Insert: 0x2d, Delete: 0x2e,
+      ';': 0xba, '=': 0xbb, ',': 0xbc, '-': 0xbd, '.': 0xbe, '/': 0xbf,
+      '`': 0xc0, '[': 0xdb, '\\': 0xdc, ']': 0xdd, "'": 0xde,
+      ...Object.fromEntries(Array.from({ length: 12 }, (_, i) => [`F${i + 1}`, 0x70 + i])),
     }
 
     function virtualKey(key) {
@@ -832,6 +841,14 @@ window.__ModuleLoader__.load({
       const [immersive, setImmersive] = useState(false)
       const [crop, setCrop] = useState({ mode: false, rect: null })
       const [pointerMode, setPointerMode] = useState(false)
+      const [quality, setQualityState] = useState(() => {
+        try {
+          const saved = String(window.localStorage.getItem('dsh-game-preview.quality') ?? '')
+          return QUALITY[saved] ? saved : 'sharp'
+        } catch {
+          return 'sharp'
+        }
+      })
       const [windows, setWindows] = useState(null)
       const [roots, setRoots] = useState(null)
       const [winBusy, setWinBusy] = useState(false)
@@ -1032,7 +1049,11 @@ window.__ModuleLoader__.load({
       const attach = useCallback(async (hwnd) => {
         setWinBusy(true)
         try {
-          const next = await call('/api/window/attach', { method: 'POST', body: JSON.stringify({ hwnd }) })
+          const preset = QUALITY[quality]
+          const next = await call('/api/window/attach', {
+            method: 'POST',
+            body: JSON.stringify({ hwnd, options: { fps: preset.fps, maxWidth: preset.maxWidth, quality: preset.quality } }),
+          })
           setSnap(next)
           setWindows(null)
           setReloadKey((n) => n + 1)
@@ -1069,6 +1090,27 @@ window.__ModuleLoader__.load({
       }
       const ordered = [...configs].sort((a, b) => rankOf(a) - rankOf(b))
       const primaryCfg = active ? (configs.find((c) => c.id === active.id) ?? ordered[0]) : ordered[0]
+
+      const switchQuality = useCallback(async (next) => {
+        setQualityState(next)
+        try {
+          window.localStorage.setItem('dsh-game-preview.quality', next)
+        } catch {}
+        const preset = QUALITY[next]
+        if (!active || active.kind !== 'window') return
+        setBusy(true)
+        try {
+          setSnap(await call('/api/window/config', {
+            method: 'POST',
+            body: JSON.stringify({ fps: preset.fps, maxWidth: preset.maxWidth, quality: preset.quality }),
+          }))
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        } finally {
+          setBusy(false)
+        }
+      }, [active])
+
 
       const cropKey = (active) =>
         `dsh-game-preview.crop:${active?.windowTitle ?? active?.id ?? 'stage'}`
@@ -1327,6 +1369,14 @@ window.__ModuleLoader__.load({
             title: preset.width ? `${preset.width}×${preset.height}` : '铺满舞台',
             onClick: () => setViewport(key),
           }, preset.label)),
+          isWindow
+            ? h('button', {
+                className: 'gp-btn',
+                title: quality === 'sharp' ? '当前：原尺寸 + 高质量（更清晰，约 15–20fps）' : '当前：降采样 + 快速编码（更跟手，约 28–30fps）',
+                disabled: busy,
+                onClick: () => void switchQuality(quality === 'sharp' ? 'smooth' : 'sharp'),
+              }, QUALITY[quality].label)
+            : null,
           isWindow
             ? h('button', {
                 className: 'gp-btn',

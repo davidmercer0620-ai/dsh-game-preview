@@ -271,18 +271,44 @@ try {
   console.log('window closed ->', closed?.errorCode ?? 'not detected', '|', closed?.error ?? '')
   if (!closed) throw new Error('closing the window must be reported as window-closed')
 
-  // pointer events are forwarded to the captured window
-  const moved = await (await fetch(base + '/api/input', {
-    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ type: 'move', x: 0.5, y: 0.5 }),
-  })).json()
-  console.log('input move', moved.ok)
-  if (moved.ok !== true) throw new Error('input forwarding rejected a move: ' + moved.error)
+  // quality switch restarts the capture with new options on the same window
+  const qualityPad = spawn('notepad.exe', [], { windowsHide: false, detached: false })
+  try {
+    await sleep(1200)
+    const qualityList = await (await fetch(base + '/api/window/list')).json()
+    const qualityWin = (qualityList.windows ?? []).find((w) => w.pid === qualityPad.pid)
+    if (!qualityWin) throw new Error('quality test window not found')
+    const attached = await (await fetch(base + '/api/window/attach', {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ hwnd: qualityWin.hwnd }),
+    })).json()
+    if (!attached.ok) throw new Error('quality test attach failed: ' + attached.error)
+    await sleep(600)
+    // pointer events are forwarded to the captured window
+    const moved = await (await fetch(base + '/api/input', {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ type: 'move', x: 0.5, y: 0.5 }),
+    })).json()
+    console.log('input move', moved.ok)
+    if (moved.ok !== true) throw new Error('input forwarding rejected a move: ' + moved.error)
 
-  const badInput = await fetch(base + '/api/input', {
-    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ type: 'nope' }),
-  })
-  console.log('input bad type', badInput.status)
-  if (badInput.status !== 400) throw new Error('an unknown input type must be a 400')
+    const badInput = await fetch(base + '/api/input', {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ type: 'nope' }),
+    })
+    console.log('input bad type', badInput.status)
+    if (badInput.status !== 400) throw new Error('an unknown input type must be a 400')
+
+    const smoothed = await (await fetch(base + '/api/window/config', {
+      method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ fps: 30, maxWidth: 900, quality: 60 }),
+    })).json()
+    await sleep(1200)
+    const afterQuality = await (await fetch(base + '/api/state')).json()
+    console.log('quality switch →', smoothed.ok, 'width:', afterQuality.capture.width, 'fps:', afterQuality.capture.fps)
+    if (!smoothed.ok) throw new Error('quality switch failed: ' + smoothed.error)
+    if (!(afterQuality.capture.width <= 900)) throw new Error('maxWidth was not applied: ' + afterQuality.capture.width)
+    if (!(afterQuality.capture.frames > 0)) throw new Error('capture produced no frames after the quality switch')
+  } finally {
+    try { qualityPad.kill() } catch {}
+    await fetch(base + '/api/stop', { method: 'POST', headers: JSON_HEADERS, body: '{}' }).catch(() => {})
+  }
 
   // restarting a capture must survive the STOPPED event of the previous session;
   // it used to flip running=false and silently discard every frame

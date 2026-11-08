@@ -871,6 +871,13 @@ export function apply(ctx, config = {}) {
     return { ok: true }
   }
 
+  async function applyCaptureOptions(options) {
+    const caps = capture.status()
+    if (!caps.hwnd) throw new Error('没有正在抓的窗口：先运行一个原生预览')
+    await capture.start(caps.hwnd, { ...captureOptions(), ...(options ?? {}) })
+    return snapshot(state.lastRoot ?? undefined)
+  }
+
   function rootsPayload() {
     const seenDirs = new Set()
     const candidates = [
@@ -1232,6 +1239,15 @@ export function apply(ctx, config = {}) {
         send(res, headers, await attachWindow(body))
       } catch (error) {
         send(res, headers, { ok: false, error: String(error?.message ?? error) }, 500)
+      }
+      return
+    }
+
+    if (path === '/api/window/config' && req.method === 'POST') {
+      try {
+        send(res, headers, await applyCaptureOptions(await readBody(req)))
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 400)
       }
       return
     }
@@ -1794,6 +1810,18 @@ export function apply(ctx, config = {}) {
         return jsonResponse(attach)
       } catch (error) {
         return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+      }
+    }, 'buffered')
+
+    add(`${API_PREFIX}/window/config`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      try {
+        return jsonResponse(await applyCaptureOptions(body))
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 400)
       }
     }, 'buffered')
 
