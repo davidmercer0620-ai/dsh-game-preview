@@ -1554,6 +1554,25 @@ export function apply(ctx, config = {}) {
         fetchRoutePaths: [...routePaths],
         sameOrigin: Boolean(ctx.get('connection')?.fetch?.register),
         routeSelfTest,
+        clientModules: (() => {
+          try {
+            const cm = ctx.get('clientModules')
+            if (!cm) return { present: false }
+            const ids = ['dsh-game-preview', '@davidmercer0620-ai/dsh-game-preview']
+            const paths = {}
+            for (const id of ids) paths[id] = cm.clientPath?.(id) ?? null
+            let graph = null
+            try {
+              const g = cm.graph?.()
+              graph = g ? { keys: Object.keys(g).slice(0, 12), size: JSON.stringify(g).length } : null
+            } catch (error) {
+              graph = { error: String(error) }
+            }
+            return { present: true, paths, graph }
+          } catch (error) {
+            return { error: String(error) }
+          }
+        })(),
         lastReport: state.lastReport ?? null,
         lastRequests: requestLog.slice(-15),
       })
