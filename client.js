@@ -368,6 +368,7 @@ window.__ModuleLoader__.load({
       .gp-export-head{display:flex;align-items:center;gap:8px}
       .gp-export-tc{font-size:10px;opacity:.6;word-break:break-all}
       .gp-export-row{display:flex;align-items:center;gap:8px}
+      .gp-export textarea{width:100%;box-sizing:border-box}
       .gp-export-log{font-size:10px;opacity:.72;background:color-mix(in srgb, currentColor 6%, transparent);border-radius:6px;padding:6px 8px;
         max-height:96px;overflow:auto;line-height:1.6;word-break:break-all}
       .gp-export-run{color:#c8892f}
@@ -457,10 +458,30 @@ window.__ModuleLoader__.load({
       { id: 'exe', label: 'Windows EXE', hint: 'Cocos 原生构建，需要 VS + CMake' },
     ]
 
-    function ExportPanel({ onClose }) {
+    function ExportPanel({ onClose, root }) {
       const [state, setState] = useState(null)
       const [error, setError] = useState(null)
       const [busy, setBusy] = useState(false)
+      const [envText, setEnvText] = useState(() => {
+        try {
+          return String(window.localStorage.getItem(`dsh-game-preview.env:${root ?? ''}`) ?? '')
+        } catch {
+          return ''
+        }
+      })
+      const [showEnv, setShowEnv] = useState(false)
+
+      const parseEnv = () => {
+        const out = {}
+        for (const line of envText.split('\n')) {
+          const trimmed = line.trim()
+          if (!trimmed || trimmed.startsWith('#')) continue
+          const eq = trimmed.indexOf('=')
+          if (eq <= 0) continue
+          out[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim()
+        }
+        return out
+      }
 
       useEffect(() => {
         let alive = true
@@ -488,7 +509,13 @@ window.__ModuleLoader__.load({
         setBusy(true)
         setError(null)
         try {
-          setState(await call('/api/export', { method: 'POST', body: JSON.stringify({ target }) }))
+          window.localStorage.setItem(`dsh-game-preview.env:${root ?? ''}`, envText)
+        } catch {}
+        try {
+          setState(await call('/api/export', {
+            method: 'POST',
+            body: JSON.stringify({ target, env: parseEnv() }),
+          }))
         } catch (err) {
           setError(String(err?.message ?? err))
         } finally {
@@ -540,6 +567,18 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'gp-export-tc' },
               `JDK ${tc.jdk ? '✓' : '✗'} · SDK ${tc.androidSdk ? '✓' : '✗'} · Gradle ${tc.gradle ? '✓' : '✗'} · ` +
               `android/ ${tc.androidDir ? '✓' : '✗'} · CMake ${tc.cmake ? '✓' : '✗'}`)
+          : null,
+        h('div', { className: 'gp-export-row' },
+          h('button', { className: 'gp-btn', onClick: () => setShowEnv((on) => !on) }, showEnv ? '收起构建参数' : '构建参数…'),
+          h('span', { className: 'gp-note', style: { fontSize: 10 } }, '需要时填 KEY=VALUE，例如 ZAOWU_SRC=index_v5_0.html')),
+        showEnv
+          ? h('textarea', {
+              className: 'gp-input',
+              style: { minHeight: 54, maxWidth: '100%', fontFamily: 'monospace', fontSize: 11 },
+              placeholder: 'ZAOWU_SRC=index_v5_0.html',
+              value: envText,
+              onChange: (e) => setEnvText(e.target.value),
+            })
           : null,
         EXPORT_TARGETS.map((target) =>
           h('div', { key: target.id, className: 'gp-export-row' },
@@ -1625,7 +1664,7 @@ window.__ModuleLoader__.load({
               canCapture ? h('button', { className: 'gp-btn', style: { marginLeft: 8 }, onClick: () => void openPicker() }, '换一个窗口') : null)
           : null,
         stage,
-        showExport ? h(ExportPanel, { onClose: () => setShowExport(false) }) : null,
+        showExport ? h(ExportPanel, { onClose: () => setShowExport(false), root: snap?.root ?? '' }) : null,
         h('div', { className: 'gp-bar' },
           h('button', { className: 'gp-btn', 'data-primary': '1', disabled: busy || !configs.length, onClick: () => void run(active?.id) }, '▶ 运行'),
           h('button', { className: 'gp-btn', disabled: !url, title: '重新加载预览', onClick: () => setReloadKey((n) => n + 1) }, '⟳ 重载'),

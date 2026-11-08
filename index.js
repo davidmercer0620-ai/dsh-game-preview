@@ -1106,7 +1106,7 @@ export function apply(ctx, config = {}) {
     return best
   }
 
-  async function startExport(target) {
+  async function startExport(target, runEnv = {}) {
     if (exportJob.running) throw new Error('已经有一个导出任务在跑')
     const root = state.lastRoot
     if (!root) throw new Error('还没有工作区')
@@ -1152,7 +1152,15 @@ export function apply(ctx, config = {}) {
           if (!tools.androidDir) {
             throw new Error('这个项目没有 android/ Gradle 工程：把项目自带的 Android 外壳放进来（或先让 Cocos 导出 android 平台）')
           }
-          const env = { JAVA_HOME: tools.jdk, ANDROID_HOME: tools.androidSdk, ANDROID_SDK_ROOT: tools.androidSdk }
+          const env = {
+            JAVA_HOME: tools.jdk,
+            ANDROID_HOME: tools.androidSdk,
+            ANDROID_SDK_ROOT: tools.androidSdk,
+            // keep Chinese project paths readable in the build output
+            PYTHONUTF8: '1',
+            PYTHONIOENCODING: 'utf-8',
+            ...runEnv,
+          }
           exportPush(`JDK: ${tools.jdk}`)
           exportPush(`SDK: ${tools.androidSdk}`)
           if (tools.androidBuildScript) {
@@ -1599,7 +1607,7 @@ export function apply(ctx, config = {}) {
     if (path === '/api/export' && req.method === 'POST') {
       const body = await readBody(req)
       try {
-        send(res, headers, await startExport(String(body?.target ?? 'web')))
+        send(res, headers, await startExport(String(body?.target ?? 'web'), body?.env ?? {}))
       } catch (error) {
         send(res, headers, { ok: false, error: String(error?.message ?? error) }, 400)
       }
@@ -2199,7 +2207,7 @@ export function apply(ctx, config = {}) {
         body = await request.json()
       } catch {}
       try {
-        return jsonResponse(await startExport(String(body?.target ?? 'web')))
+        return jsonResponse(await startExport(String(body?.target ?? 'web'), body?.env ?? {}))
       } catch (error) {
         return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 400)
       }
