@@ -747,6 +747,40 @@ export function apply(ctx, config = {}) {
     return child
   }
 
+  /**
+   * Unity and Godot show a splash while loading and then swap to the real
+   * editor window (a different HWND, same process). Follow the process so the
+   * stage keeps a live picture instead of freezing on "window closed".
+   */
+  async function followLaunchedWindow(pid) {
+    for (let round = 0; round < 45; round += 1) {
+      if (!proc.child || proc.child.pid !== pid) return
+      if (capture.status().running) return
+      try {
+        const windows = await capture.list()
+        const win = windows.find((w) => w.pid === pid && w.width >= 400 && w.height >= 300)
+        if (win) {
+          await capture.start(win.hwnd, captureOptions())
+          state.active = {
+            ...(state.active ?? {}),
+            kind: 'window',
+            hwnd: win.hwnd,
+            windowTitle: win.title,
+            width: win.width,
+            height: win.height,
+            url: `${originOf()}/stream?hwnd=${win.hwnd}&t=${Date.now()}`,
+            startedAt: Date.now(),
+          }
+          log('followed the engine window to', win.title || win.hwnd)
+          return
+        }
+      } catch (error) {
+        log('window follow probe failed', String(error))
+      }
+      await sleep(1000)
+    }
+  }
+
   /* -- window discovery ------------------------------------------------- */
 
   const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
@@ -1304,10 +1338,12 @@ export function apply(ctx, config = {}) {
         )
       }
       await capture.start(win.hwnd, captureOptions())
+      void followLaunchedWindow(child.pid)
       state.active = {
         id: cfg.id,
         title: cfg.title,
         kind: 'window',
+        pid: child.pid,
         hwnd: win.hwnd,
         windowTitle: win.title,
         width: win.width,
