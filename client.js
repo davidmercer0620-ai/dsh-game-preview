@@ -530,7 +530,7 @@ window.__ModuleLoader__.load({
 
         if (mode === 'bridge') {
           // push: the bridge iframe long-polls the Host and forwards every frame
-          unsubscribe = subscribeFrames((data) => {
+          const handle = (data) => {
             try {
               const binary = atob(data.jpeg)
               const bytes = new Uint8Array(binary.length)
@@ -539,9 +539,21 @@ window.__ModuleLoader__.load({
             } catch {
               /* a truncated frame is simply skipped */
             }
-          })
+          }
+          unsubscribe = subscribeFrames(handle)
+          // a hidden panel must not keep decoding 15 frames per second
+          const onVisibility = () => {
+            if (document.hidden) {
+              unsubscribe?.()
+              unsubscribe = null
+            } else if (!unsubscribe) {
+              unsubscribe = subscribeFrames(handle)
+            }
+          }
+          document.addEventListener('visibilitychange', onVisibility)
           return () => {
             alive = false
+            document.removeEventListener('visibilitychange', onVisibility)
             unsubscribe?.()
             if (currentUrl) URL.revokeObjectURL(currentUrl)
           }
@@ -1017,8 +1029,9 @@ window.__ModuleLoader__.load({
 
       const liveBadges = []
       if (isWindow) {
+        const age = capture?.lastFrameAt ? Math.max(0, Date.now() - capture.lastFrameAt) : null
         liveBadges.push(h('span', { key: 'fps', 'data-warn': capture?.fps && capture.fps < 5 ? '1' : '0' },
-          capture?.fps ? `${capture.fps} fps` : '连接中'))
+          capture?.fps ? `${capture.fps} fps${age !== null ? ` · ${Math.min(999, Math.round(age))}ms` : ''}` : '连接中'))
         if (capture?.stale || (capture?.errorCode && capture.errorCode !== 'minimized')) {
           liveBadges.push(h('span', { key: 'stale', 'data-warn': '1' }, capture?.errorCode === 'window-closed' ? '窗口已关闭' : '已断流'))
         }
