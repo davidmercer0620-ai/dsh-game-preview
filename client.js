@@ -1591,6 +1591,19 @@ window.__ModuleLoader__.load({
             h('button', { className: 'gp-btn', onClick: () => setWindows(null) }, '取消'))
         : null
 
+      const autoRan = useRef(false)
+      useEffect(() => {
+        if (autoRan.current || !snap || active) return
+        try {
+          if (window.localStorage.getItem('dsh-game-preview.autoRun') === '0') return
+        } catch {}
+        autoRan.current = true
+        void (async () => {
+          if (await restoreWindow()) return
+          if (primaryCfg && primaryCfg.kind !== 'manual' && !primaryCfg.missing) void run(primaryCfg.id)
+        })()
+      }, [snap, active, primaryCfg, run, restoreWindow])
+
       if (!snap && !error) {
         return h('div', { className: 'gp-root' },
           useStyles(),
@@ -1609,19 +1622,6 @@ window.__ModuleLoader__.load({
             title: '退出满屏',
           }, '✕ 退出满屏'))
       }
-
-      const autoRan = useRef(false)
-      useEffect(() => {
-        if (autoRan.current || !snap || active) return
-        try {
-          if (window.localStorage.getItem('dsh-game-preview.autoRun') === '0') return
-        } catch {}
-        autoRan.current = true
-        void (async () => {
-          if (await restoreWindow()) return
-          if (primaryCfg && primaryCfg.kind !== 'manual' && !primaryCfg.missing) void run(primaryCfg.id)
-        })()
-      }, [snap, active, primaryCfg, run, restoreWindow])
 
       return h('div', { className: 'gp-root' },
         useStyles(),
