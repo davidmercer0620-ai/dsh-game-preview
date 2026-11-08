@@ -1,8 +1,7 @@
 {
   "name": "dsh-game-preview",
-  "version": "0.4.6",
-  "private": true,
-  "description": "Game preview panel for DeepSeek Harness: run configurations, native window capture, and a live stage inside the right sidebar.",
+  "version": "0.5.0",
+  "description": "Game preview panel for DeepSeek Harness: run configurations, native window capture with input forwarding, PC/phone viewports and a live stage inside the right sidebar.",
   "type": "module",
   "icon": "icon.svg",
   "exports": {
@@ -20,6 +19,7 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
+    "CHANGELOG.md",
     "LICENSE"
   ],
   "dsh": {
@@ -39,8 +39,15 @@
     "deepseek-harness",
     "dsh",
     "dsh-plugin",
-    "gamedev",
-    "preview"
+    "game-dev",
+    "preview",
+    "unity",
+    "godot",
+    "cocos",
+    "wechat-minigame"
   ],
-  "license": "MIT"
+  "license": "MIT",
+  "engines": {
+    "node": ">=22"
+  }
 }

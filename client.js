@@ -353,6 +353,12 @@ window.__ModuleLoader__.load({
         border-radius:999px;padding:3px 10px;font-size:11px;cursor:pointer;white-space:nowrap}
       .gp-chip[data-on="1"]{background:color-mix(in srgb, currentColor 12%, transparent);border-color:color-mix(in srgb, currentColor 30%, transparent)}
       .gp-chip[data-dim="1"]{opacity:.45;cursor:not-allowed}
+      .gp-chip-window{display:inline-flex;align-items:center;gap:4px;cursor:default}
+      .gp-chip-x{border:0;background:transparent;color:inherit;opacity:.65;cursor:pointer;font-size:11px;padding:0 0 0 2px}
+      .gp-chip-x:hover{opacity:1}
+      .gp-spinner{width:22px;height:22px;border-radius:50%;border:2px solid color-mix(in srgb, currentColor 22%, transparent);
+        border-top-color:color-mix(in srgb, currentColor 70%, transparent);animation:gp-spin .8s linear infinite}
+      @keyframes gp-spin{to{transform:rotate(360deg)}}
       .gp-chip-primary{border-color:color-mix(in srgb, currentColor 34%, transparent);font-weight:600}
       .gp-chip-select{appearance:none;padding-right:18px;background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
         background-position:calc(100% - 9px) 50%,calc(100% - 5px) 50%;background-size:4px 4px,4px 4px;background-repeat:no-repeat}
@@ -1089,6 +1095,27 @@ window.__ModuleLoader__.load({
         }
       }, [pointerMode, sendInput])
 
+      const detachWindow = useCallback(async () => {
+        try {
+          setSnap(await call('/api/window/stop', { method: 'POST', body: '{}' }))
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        }
+      }, [])
+
+      const redetect = useCallback(async () => {
+        if (!snap?.root) return
+        setBusy(true)
+        try {
+          setSnap(await call('/api/detect', { method: 'POST', body: JSON.stringify({ root: snap.root }) }))
+          setError(null)
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        } finally {
+          setBusy(false)
+        }
+      }, [snap?.root])
+
       const openPicker = useCallback(async () => {
         setWinBusy(true)
         try {
@@ -1256,7 +1283,7 @@ window.__ModuleLoader__.load({
                 key: cfg.id,
                 value: cfg.id,
                 disabled: cfg.kind === 'native' && !canCapture,
-              }, cfg.title)))
+              }, `${cfg.title}${cfg.detail ? ` — ${cfg.detail}` : ''}`)))
           : null,
       ]
 
@@ -1390,6 +1417,14 @@ window.__ModuleLoader__.load({
             h('button', { className: 'gp-btn', onClick: () => setWindows(null) }, '取消'))
         : null
 
+      if (!snap && !error) {
+        return h('div', { className: 'gp-root' },
+          useStyles(),
+          h('div', { className: 'gp-empty' },
+            h('div', { className: 'gp-spinner', 'aria-hidden': 'true' }),
+            h('div', { className: 'gp-note' }, '正在连接游戏预览宿主…')))
+      }
+
       if (immersive) {
         return h('div', { className: 'gp-root', 'data-immersive': '1' },
           useStyles(),
@@ -1425,9 +1460,18 @@ window.__ModuleLoader__.load({
             ? h('button', {
                 className: 'gp-chip',
                 disabled: winBusy,
-                title: snap.root,
+                title: `${snap.root}（点击切换项目）`,
                 onClick: () => void openRoots(),
               }, `📁 ${String(snap.root).split(/[\\/]/).filter(Boolean).pop() ?? snap.root} ▾`)
+            : null,
+          isWindow && active?.windowTitle
+            ? h('span', { className: 'gp-chip gp-chip-window', title: active.windowTitle },
+                `🪟 ${String(active.windowTitle).slice(0, 18)}`,
+                h('button', {
+                  className: 'gp-chip-x',
+                  title: '停止抓帧',
+                  onClick: () => void detachWindow(),
+                }, '✕'))
             : null,
           h('span', { className: 'gp-spacer' }),
           h('span', { className: 'gp-dirty', title: dirty.length ? `待运行：${dirty.slice(0, 12).join('、')}${dirty.length > 12 ? ' …' : ''}` : '已同步' },
@@ -1455,7 +1499,8 @@ window.__ModuleLoader__.load({
         stage,
         h('div', { className: 'gp-bar' },
           h('button', { className: 'gp-btn', 'data-primary': '1', disabled: busy || !configs.length, onClick: () => void run(active?.id) }, '▶ 运行'),
-          h('button', { className: 'gp-btn', disabled: !url, onClick: () => setReloadKey((n) => n + 1) }, '⟳ 重载'),
+          h('button', { className: 'gp-btn', disabled: !url, title: '重新加载预览', onClick: () => setReloadKey((n) => n + 1) }, '⟳ 重载'),
+          h('button', { className: 'gp-btn', disabled: busy || !snap?.root, title: '重新扫描这个项目的运行配置', onClick: () => void redetect() }, '🔄 检测'),
           h('button', { className: 'gp-btn', disabled: busy || (!snap?.running && !capture?.running), onClick: () => void stop() }, '⏹ 停止'),
           h('span', { className: 'gp-spacer' }),
           Object.entries(VIEWPORTS).map(([key, preset]) => h('button', {

@@ -127,9 +127,12 @@ function walk(node, visit) {
 const tree = body.component({})
 const types = []
 walk(tree, (n) => types.push(typeof n.type === 'string' ? n.type : String(n.type)))
-if (!types.includes('iframe') && !types.includes('input')) {
-  throw new Error(`panel rendered no stage and no path input: ${types.slice(0, 8).join(',')}`)
-}
+const spinners = []
+walk(tree, (n) => {
+  if (typeof n.props?.className === 'string' && n.props.className.includes('gp-spinner')) spinners.push(n)
+})
+if (spinners.length !== 1) throw new Error('the first render must show the connecting skeleton')
+if (!types.includes('div')) throw new Error('panel rendered nothing at all')
 
 const headerTree = header.component({})
 walk(headerTree, (n) => types.push(n.type === 'button' ? 'button' : ''))
@@ -251,6 +254,10 @@ walk(noRootTree, (n) => {
   if (n.type === 'select') rootOptions.push((n.children ?? []).length)
 })
 if (!rootOptions.some((n) => n >= 3)) throw new Error('without a workspace the panel must offer the discovered directories')
+
+const noRootInputs = []
+walk(noRootTree, (n) => { if (n.type === 'input') noRootInputs.push(n) })
+if (!noRootInputs.length) throw new Error('the empty state must still accept a project path')
 
 // regression guard: call sites keep the loopback shape '/api/...' while a
 // same-origin base already ends in /api/game-preview, so `call` must strip the

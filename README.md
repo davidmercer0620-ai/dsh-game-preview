@@ -35,7 +35,7 @@
 
 ## 安装
 
-要求：DeepSeek Harness `0.2.x`（Web 或桌面），Node.js 22+。窗口捕获另需 Windows 10/11。
+要求：DeepSeek Harness `0.2.x`（Web 或桌面），Node.js 22+。窗口捕获、输入转发与引擎启动为 **Windows 10/11 专有**；Web 预览跨平台可用。
 
 ```bash
 # 从本地目录安装（开发用；目录是链接安装）
@@ -177,6 +177,20 @@ Client 与 Host 之间有两条通道，**面板优先走同源**：
 - **v0.3**：录制与回放（seed + 输入序列），同一段输入对比两个 build；暂停/单步/截图
 - **v0.4**：微信 `miniprogram-automator` 通道（截图 / 脚本输入 / console 捕获）
 - 之后：引擎桥（Godot TCP 6007、Unity Editor 连接）、WGC 抓帧后端
+
+## 发布
+
+```bash
+npm pack --dry-run     # 先看一眼打包内容（12 个文件，约 185 KB）
+npm version minor      # 0.5.0 → 0.6.0
+npm publish            # 需要 npm 登录；包名 dsh-game-preview 需可用
+```
+
+发布前后的一致性检查：
+
+- `package.json` 的 `version` 是唯一版本源（Host 的 `/api/hello` 直接读它）
+- `files` 里不能漏掉 `host/`，否则窗口捕获在别人机器上会缺文件
+- `cordis.patch.yml` 的 `config` 默认值要能开箱即用（`cocosEditor` 这类本机路径别写死）
 
 ## 开发
 
