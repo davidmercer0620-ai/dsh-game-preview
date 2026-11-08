@@ -1021,6 +1021,11 @@ export function apply(ctx, config = {}) {
       }
       const entry = ensureRoot(target)
       entry.configs = detect(entry.root)
+      // switching projects must not keep another project's stage alive
+      if (state.lastRoot && resolve(state.lastRoot) !== entry.root) {
+        state.active = null
+        killChild()
+      }
       state.lastRoot = entry.root
       send(res, headers, snapshot(entry.root))
       return
@@ -1649,6 +1654,10 @@ export function apply(ctx, config = {}) {
       if (!existsSync(target)) return jsonResponse({ ok: false, error: `目录不存在：${target}` }, 404)
       const entry = ensureRoot(target)
       entry.configs = detect(entry.root)
+      if (state.lastRoot && resolve(state.lastRoot) !== entry.root) {
+        state.active = null
+        killChild()
+      }
       state.lastRoot = entry.root
       return jsonResponse(snapshot(entry.root))
     }, 'buffered')
