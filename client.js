@@ -24,6 +24,8 @@ window.__ModuleLoader__.load({
     // the tab id must stay stable: sessions persist the open tab by id, and a
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
+    // shown next to the host version so a stale bundle is obvious at a glance
+    const CLIENT_BUILD = '0.5.15'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -1655,7 +1657,7 @@ window.__ModuleLoader__.load({
         !health.mode || error
           ? h('div', { className: 'gp-health' },
           health.mode
-            ? `宿主 v${health.version ?? '?'} · ${
+            ? `宿主 v${health.version ?? '?'} · 客户端 ${CLIENT_BUILD} · ${
                 health.mode === 'origin' ? '同源' : health.mode === 'bridge' ? `:${health.port}(iframe桥)` : ':' + health.port
               }${snap?.root ? ' · ' + snap.root : ''}`
             : (health.error ?? '正在连接宿主…'),

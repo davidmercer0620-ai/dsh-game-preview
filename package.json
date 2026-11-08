@@ -1,6 +1,6 @@
 {
   "name": "@davidmercer0620-ai/dsh-game-preview",
-  "version": "0.5.14",
+  "version": "0.5.15",
   "description": "A game studio plugin for DeepSeek Harness: run your game, capture native windows, and play inside the sidebar.",
   "type": "module",
   "icon": "icon.svg",
