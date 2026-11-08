@@ -103,28 +103,40 @@ if (!header) throw new Error('header button was not registered')
 
 /* --------------------------------------------------------------- render once */
 
-function walk(node, visit) {
+function walk(node, visit, depth = 0) {
   if (!node || typeof node !== 'object') return
   visit(node)
   if (typeof node.type === 'function') {
+    // each top-level render restarts from the fixture's seeded hook values,
+    // otherwise a second walk over the same tree finds them exhausted
+    if (depth === 0) react.__states = (node.__seed ?? react.__seed ?? []).slice()
     // render the nested component once so its markup is part of the tree,
     // passing children the way React does
     const props = { ...(node.props ?? {}) }
     if (node.children?.length) props.children = node.children.length === 1 ? node.children[0] : node.children
     let rendered = null
     try {
-      rendered = node.type(props)
+      const fn = node.type
+      // class components cannot be called; instantiate and render once
+      rendered = /^class[\s{]/.test(String(fn)) ? new fn(props).render() : fn(props)
     } catch (error) {
       if (process.env.DSH_DEBUG_HARNESS) console.error('[walk] component threw:', node.type?.name, String(error?.message ?? error))
       rendered = null
     }
-    if (rendered) walk(rendered, visit)
+    if (rendered) walk(rendered, visit, depth + 1)
     return
   }
-  for (const child of node.children ?? []) walk(child, visit)
+  for (const child of node.children ?? []) walk(child, visit, depth + 1)
 }
 
-const tree = body.component({})
+const renderPanel = (props = {}) => {
+  const element = body.component(props)
+  // remember the fixture this tree was built from: walks may happen much later
+  element.__seed = (react.__seed ?? []).slice()
+  return element
+}
+
+const tree = renderPanel()
 const types = []
 walk(tree, (n) => types.push(typeof n.type === 'string' ? n.type : String(n.type)))
 const spinners = []
@@ -140,7 +152,7 @@ if (!types.includes('button')) throw new Error('header control rendered no butto
 
 /* ------------------------------------------- render the running stage state */
 
-react.__states = [{
+react.__seed = [{
   configs: [
     { id: 'static', kind: 'web', title: '静态 HTML' },
     { id: 'node-dev', kind: 'web', title: 'Web · serve', detail: 'npm run serve' },
@@ -150,7 +162,7 @@ react.__states = [{
   running: true,
   root: 'C:/games/demo',
 }]
-const running = body.component({})
+const running = renderPanel()
 const stageSrcs = []
 const dirtyText = []
 walk(running, (n) => {
@@ -178,8 +190,8 @@ const windowSnap = {
   capture: { supported: true, running: true, fps: 24.5, width: 1280, height: 720, stale: false, error: null, errorCode: null, black: 0 },
 }
 // useState order in Panel: snap, error, busy, reloadKey, viewport, manualRoot, rootOverride, manualUrl, immersive, crop, pointerMode, showExport, quality, windows, roots, winBusy
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
-const windowTree = body.component({})
+react.__seed = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
+const windowTree = renderPanel()
 const shots = []
 const badges = []
 walk(windowTree, (n) => {
@@ -194,8 +206,8 @@ if (!badges.some((b) => b.includes('fps'))) throw new Error(`window stage render
 
 // a stale capture must show the disconnect badge rather than a silent freeze
 const staleSnap = { ...windowSnap, capture: { ...windowSnap.capture, fps: 0, stale: true } }
-react.__states = [staleSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
-const staleTree = body.component({})
+react.__seed = [staleSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
+const staleTree = renderPanel()
 const staleBadges = []
 walk(staleTree, (n) => { if (typeof n.children?.[0] === 'string' && n.children[0] === '已断流') staleBadges.push(n.children[0]) })
 if (!staleBadges.length) throw new Error('a stale capture must show the 已断流 badge')
@@ -206,6 +218,7 @@ walk(windowTree, (n) => {
   const label = typeof n.children?.[0] === 'string' ? n.children[0] : ''
   if (['自适应', 'PC', '手机'].includes(label)) viewportLabels.push(label)
 })
+
 if (viewportLabels.length !== 3) throw new Error('expected 自适应 / PC / 手机 buttons, got: ' + viewportLabels.join(','))
 
 const vpBoxes = []
@@ -215,8 +228,8 @@ walk(windowTree, (n) => {
 if (vpBoxes[0] !== 'auto') throw new Error('stage box did not follow the auto viewport: ' + vpBoxes[0])
 
 // a phone preview must be a 390x844 logical viewport, not a stretched box
-react.__states = [windowSnap, null, false, 0, 'mobile', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
-const phoneTree = body.component({})
+react.__seed = [windowSnap, null, false, 0, 'mobile', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
+const phoneTree = renderPanel()
 const screens = []
 walk(phoneTree, (n) => {
   if (typeof n.props?.className === 'string' && n.props.className.includes('gp-device-screen')) screens.push(n.props)
@@ -225,7 +238,7 @@ const phoneScreen = screens.find((p) => p.style?.width === 390)
 if (!phoneScreen) throw new Error('phone mode rendered no 390px-wide device screen')
 if (phoneScreen.style.height !== 844) throw new Error('phone device screen must be 390x844, got ' + JSON.stringify(phoneScreen.style))
 
-const pickerTreeForVp = body.component({})
+const pickerTreeForVp = renderPanel()
 void pickerTreeForVp
 
 // the workspace chip shows the directory the Host resolved, so a fresh session
@@ -238,8 +251,8 @@ walk(windowTree, (n) => {
 if (!dirChips.length) throw new Error('panel did not render a workspace directory chip')
 
 // the window picker renders one option per capturable window
-react.__states = [windowSnap, null, false, 0, 'pc', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
-const pickerTree = body.component({})
+react.__seed = [windowSnap, null, false, 0, 'pc', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
+const pickerTree = renderPanel()
 let pickerOptions = 0
 walk(pickerTree, (n) => { if (n.type === 'select') pickerOptions = (n.children ?? []).length })
 if (pickerOptions < 2) throw new Error('window picker rendered no window options')
@@ -247,8 +260,8 @@ if (pickerOptions < 2) throw new Error('window picker rendered no window options
 // no workspace known yet: the panel must offer the discovered directories
 // instead of a dead end that says "nothing detected"
 const noRootSnap = { root: null, configs: [], active: null, dirty: [], running: false, capture: { supported: true } }
-react.__states = [noRootSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
-const noRootTree = body.component({})
+react.__seed = [noRootSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, false, false, 'sharp', null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
+const noRootTree = renderPanel()
 const rootOptions = []
 walk(noRootTree, (n) => {
   if (n.type === 'select') rootOptions.push((n.children ?? []).length)
@@ -277,12 +290,17 @@ walk(running, (n) => {
   if (typeof n.props?.className === 'string' && n.props.className.includes('gp-chip-primary')) primaryChips.push(n.props)
   if (n.type === 'select' && String(n.props?.className ?? '').includes('gp-chip-select')) moreMenus.push(n)
 })
+if (process.env.DSH_DEBUG_HARNESS) {
+  const seen = []
+  walk(running, (n) => { if (typeof n.props?.className === 'string') seen.push(n.props.className) })
+  console.error('[dbg] classes:', seen.slice(0, 16).join(' | '))
+}
 if (primaryChips.length !== 1) throw new Error(`expected one primary config button, got ${primaryChips.length}`)
 if (moreMenus.length !== 1) throw new Error('expected one "other configs" menu')
 
 // immersive mode hides every control and floats a single exit pill
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', true, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
-const immersiveTree = body.component({})
+react.__seed = [windowSnap, null, false, 0, 'auto', '', '', '', true, { mode: false, rect: null }, false, false, 'sharp', null, null, false]
+const immersiveTree = renderPanel()
 const exitPills = []
 const chipRows = []
 walk(immersiveTree, (n) => {
@@ -293,8 +311,8 @@ if (exitPills.length !== 1) throw new Error('immersive mode renders no exit cont
 if (chipRows.length !== 0) throw new Error('immersive mode must hide the config row')
 
 // pointer mode: the capture becomes an interactive surface
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, true, false, 'sharp', null, null, false]
-const interactiveTree = body.component({})
+react.__seed = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, true, false, 'sharp', null, null, false]
+const interactiveTree = renderPanel()
 const interactiveImgs = []
 walk(interactiveTree, (n) => {
   if (n.type === 'img' && n.props?.['data-interactive'] === '1') interactiveImgs.push(n.props)
@@ -304,16 +322,16 @@ if (typeof interactiveImgs[0].onMouseDown !== 'function') throw new Error('inter
 if (typeof interactiveImgs[0].onKeyDown !== 'function') throw new Error('interactive stage has no key handler')
 
 // crop tool: selecting a region is a mode, and a stored rect scales the image
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: true, rect: null }, false, false, 'sharp', null, null, false]
-const cropModeTree = body.component({})
+react.__seed = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: true, rect: null }, false, false, 'sharp', null, null, false]
+const cropModeTree = renderPanel()
 const cropLayers = []
 walk(cropModeTree, (n) => {
   if (typeof n.props?.className === 'string' && n.props.className.includes('gp-crop-layer')) cropLayers.push(n)
 })
 if (cropLayers.length !== 1) throw new Error('crop mode rendered no selection layer')
 
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: { x: 0.25, y: 0.1, w: 0.5, h: 0.5 } }, false, false, 'sharp', null, null, false]
-const croppedTree = body.component({})
+react.__seed = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: { x: 0.25, y: 0.1, w: 0.5, h: 0.5 } }, false, false, 'sharp', null, null, false]
+const croppedTree = renderPanel()
 const croppedInners = []
 walk(croppedTree, (n) => {
   if (typeof n.props?.className === 'string' && n.props.className.includes('gp-crop-inner')) croppedInners.push(n.props.style)

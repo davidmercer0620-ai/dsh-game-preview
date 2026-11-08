@@ -1743,14 +1743,60 @@ window.__ModuleLoader__.load({
         h('path', { d: 'M10 10l4.5 2.5L10 15z', fill: 'currentColor' })))
     }
 
+    /* ------------------------------------------------------------ resilience */
+
+    const ReactComponent = React.Component ?? class { constructor(props) { this.props = props } }
+
+    class PanelBoundary extends ReactComponent {
+      constructor(props) {
+        super(props)
+        this.state = { error: null }
+      }
+      static getDerivedStateFromError(error) {
+        return { error }
+      }
+      componentDidCatch(error, info) {
+        try {
+          console.error('[game-preview] panel crashed', error, info)
+        } catch {}
+      }
+      render() {
+        if (!this.state.error) return this.props.children
+        const text = String(this.state.error?.stack ?? this.state.error)
+        return h('div', { style: { padding: 12, fontSize: 11, color: '#d9534f', whiteSpace: 'pre-wrap', lineHeight: 1.5 } },
+          '游戏预览面板崩溃：\n' + text.slice(0, 900))
+      }
+    }
+
+    function CrashReport({ error }) {
+      return h('div', { style: { padding: 12, fontSize: 11, color: '#d9534f', whiteSpace: 'pre-wrap', lineHeight: 1.5 } },
+        '游戏预览插件注册失败：\n' + String(error).slice(0, 900))
+    }
+
     /* --------------------------------------------------------- registration */
 
     let ctxRef = null
+    let applyError = null
 
     return {
       inject: ['slots'],
       apply(ctx) {
         ctxRef = ctx
+        try {
+          register(ctx)
+        } catch (error) {
+          applyError = String(error?.stack ?? error)
+          try {
+            console.error('[game-preview] apply failed', error)
+          } catch {}
+          try {
+            ctx.slots.register({ name: 'sidebar.right.pane.tab', key: ID }, () => h(CrashReport, { error: applyError }))
+          } catch {}
+        }
+      },
+    }
+
+    function register(ctx) {
         ctx.inject(['sidebarRightTabs'], (inner) => {
           const tabs = inner.sidebarRightTabs
           if (!tabs || typeof tabs.register !== 'function') return undefined
@@ -1767,7 +1813,7 @@ window.__ModuleLoader__.load({
               }],
             }))
             disposers.push(inner.slots.inject('sidebar.right.pane.tab', () =>
-              inner.slots.register({ name: 'sidebar.right.pane.tab', key: ID }, Panel)))
+              inner.slots.register({ name: 'sidebar.right.pane.tab', key: ID }, (props) => h(PanelBoundary, null, h(Panel, props)))))
           } catch {
             for (const dispose of disposers) { try { dispose() } catch {} }
             return undefined
@@ -1777,7 +1823,6 @@ window.__ModuleLoader__.load({
 
         ctx.slots.inject('conversation.session.header.utilities', () =>
           ctx.slots.register({ name: 'conversation.session.header.utilities', id: 'game-preview-open', order: 40 }, OpenButton))
-      },
     }
   },
 })

@@ -548,7 +548,7 @@ function configsAt(dir, rel, pkg) {
       engine: 'godot',
       title: `Godot · 原生${label}`,
       detail: '运行主场景 + 窗口捕获',
-      windowMatch: 'Godot|游戏|Game',
+      windowMatch: '^Godot|Godot Engine',
       estimatedMs: 6000,
       reload: 'manual',
     })
@@ -1564,7 +1564,13 @@ export function apply(ctx, config = {}) {
             let graph = null
             try {
               const g = cm.graph?.()
-              graph = g ? { keys: Object.keys(g).slice(0, 12), size: JSON.stringify(g).length } : null
+              const entries = g?.entries
+              const flat = Array.isArray(entries)
+                ? entries.filter((e) => JSON.stringify(e).includes('game-preview')).slice(0, 6)
+                : entries && typeof entries === 'object'
+                  ? Object.entries(entries).filter(([k]) => k.includes('game-preview')).slice(0, 6)
+                  : null
+              graph = g ? { keys: Object.keys(g), rev: g.rev, matching: flat } : null
             } catch (error) {
               graph = { error: String(error) }
             }
