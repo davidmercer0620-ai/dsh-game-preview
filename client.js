@@ -134,6 +134,11 @@ window.__ModuleLoader__.load({
           }
           return
         }
+        if (data.__gp === 'frame') {
+          const handler = frameHandlers.get(data.id)
+          if (handler) handler(data)
+          return
+        }
         if (data.__gp === 'res') {
           const waiter = bridge.waiters.get(data.id)
           if (waiter) {
@@ -143,6 +148,24 @@ window.__ModuleLoader__.load({
         }
       })
     } catch {}
+
+    const frameHandlers = new Map()
+
+    /** Stream captured frames without a request/response round trip per frame. */
+    function subscribeFrames(onFrame) {
+      if (!bridge.frame || !bridge.port) return () => {}
+      const id = `f${++bridge.seq}`
+      frameHandlers.set(id, onFrame)
+      try {
+        bridge.frame.contentWindow.postMessage({ __gp: 'sub', id }, '*')
+      } catch {}
+      return () => {
+        frameHandlers.delete(id)
+        try {
+          bridge.frame.contentWindow.postMessage({ __gp: 'unsub', id }, '*')
+        } catch {}
+      }
+    }
 
     function connectBridge(port, timeoutMs = 2000) {
       if (bridge.frame && bridge.port === port) return Promise.resolve(true)
@@ -329,6 +352,13 @@ window.__ModuleLoader__.load({
       .gp-chip-select{appearance:none;padding-right:18px;background-image:linear-gradient(45deg,transparent 50%,currentColor 50%),linear-gradient(135deg,currentColor 50%,transparent 50%);
         background-position:calc(100% - 9px) 50%,calc(100% - 5px) 50%;background-size:4px 4px,4px 4px;background-repeat:no-repeat}
       .gp-stage{position:relative;flex:1;min-height:0;display:flex;align-items:stretch;justify-content:center;background:color-mix(in srgb, currentColor 4%, transparent);overflow:hidden}
+      .gp-crop{position:absolute;inset:0;overflow:hidden;background:#000}
+      .gp-crop-inner{position:absolute;transform-origin:top left}
+      .gp-crop-inner .gp-shot{width:100%;height:100%;object-fit:fill}
+      .gp-crop-layer{position:absolute;inset:0;z-index:4;cursor:crosshair;background:rgba(10,12,18,.45)}
+      .gp-crop-layer .gp-crop-box{position:absolute;border:1px solid #7aa7ff;background:rgba(122,167,255,.16);box-shadow:0 0 0 9999px rgba(0,0,0,.35)}
+      .gp-crop-hint{position:absolute;left:50%;top:10px;transform:translateX(-50%);font-size:11px;color:#dbe6ff;background:rgba(12,16,26,.72);
+        padding:4px 10px;border-radius:999px;pointer-events:none}
       .gp-device{position:relative;display:flex;align-items:center;justify-content:center;width:100%;height:100%;overflow:hidden}
       .gp-device-screen{flex:none;transform-origin:center center;overflow:hidden;background:#000;
         box-shadow:0 0 0 1px color-mix(in srgb, currentColor 20%, transparent), 0 12px 34px rgba(0,0,0,.35)}
@@ -375,6 +405,174 @@ window.__ModuleLoader__.load({
       return h('style', { 'data-game-preview': '1' }, css)
     }
 
+    /* -------------------------------------------------------------- crop */
+
+    /**
+     * Engine editors show the game inside a docked panel; cropping to that panel
+     * is what makes a Unity capture actually look like a game window. The rect
+     * is normalised (0..1) against the captured frame and remembered per window.
+     */
+    function CropOverlay({ onPick, onCancel }) {
+      const [start, setStart] = useState(null)
+      const [now, setNow] = useState(null)
+      const point = (event) => {
+        const rect = event.currentTarget.getBoundingClientRect()
+        return {
+          x: Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
+          y: Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
+        }
+      }
+      const box = start && now
+        ? {
+            left: `${Math.min(start.x, now.x) * 100}%`,
+            top: `${Math.min(start.y, now.y) * 100}%`,
+            width: `${Math.abs(now.x - start.x) * 100}%`,
+            height: `${Math.abs(now.y - start.y) * 100}%`,
+          }
+        : null
+      return h('div', {
+        className: 'gp-crop-layer',
+        onMouseDown: (event) => { event.preventDefault(); setStart(point(event)); setNow(point(event)) },
+        onMouseMove: (event) => { if (start) setNow(point(event)) },
+        onMouseUp: () => {
+          if (!start || !now) return
+          const x = Math.min(start.x, now.x)
+          const y = Math.min(start.y, now.y)
+          const w = Math.abs(now.x - start.x)
+          const hh = Math.abs(now.y - start.y)
+          if (w > 0.04 && hh > 0.04) onPick({ x, y, w, h: hh })
+          setStart(null)
+          setNow(null)
+        },
+        onMouseLeave: () => { setStart(null); setNow(null) },
+        onDoubleClick: onCancel,
+      },
+        h('span', { className: 'gp-crop-hint' }, '按住框选要显示的区域 · 双击取消'),
+        box ? h('div', { className: 'gp-crop-box', style: box }) : null)
+    }
+
+    /* -------------------------------------------------------- device frame */
+
+    /**
+     * A phone preview must be a 390x844 *logical* viewport, or the game's media
+     * queries never see a phone. The frame keeps that size and scales the whole
+     * thing down to fit whatever space the sidebar gives it.
+     */
+    function DeviceFrame({ viewport, children }) {
+      const hostRef = useRef(null)
+      const preset = VIEWPORTS[viewport]?.width ? VIEWPORTS[viewport] : null
+      const [scale, setScale] = useState(1)
+
+      useEffect(() => {
+        const host = hostRef.current
+        if (!host || !preset) {
+          setScale(1)
+          return undefined
+        }
+        const fit = () => {
+          const rect = host.getBoundingClientRect()
+          if (!rect.width || !rect.height) return
+          const next = Math.min(1, (rect.width - 12) / preset.width, (rect.height - 12) / preset.height)
+          setScale(Math.max(0.1, Math.round(next * 1000) / 1000))
+        }
+        fit()
+        let observer = null
+        try {
+          observer = new ResizeObserver(fit)
+          observer.observe(host)
+        } catch {
+          window.addEventListener('resize', fit)
+        }
+        return () => {
+          if (observer) observer.disconnect()
+          else window.removeEventListener('resize', fit)
+        }
+      }, [preset, viewport])
+
+      const inner = preset
+        ? h('div', {
+            className: 'gp-device-screen',
+            style: { width: preset.width, height: preset.height, transform: `scale(${scale})` },
+          }, children)
+        : h('div', { className: 'gp-device-screen gp-device-fluid' }, children)
+
+      return h('div', { className: 'gp-device', 'data-vp': viewport, ref: hostRef },
+        inner,
+        preset ? h('span', { className: 'gp-device-tag' }, `${preset.width}×${preset.height} · ${Math.round(scale * 100)}%`) : null)
+    }
+
+    /* ------------------------------------------------------- window stage */
+
+    /**
+     * Native windows arrive either as one MJPEG <img> (loopback) or as polled
+     * JPEG bytes (same-origin, where <img> cannot reach the control API).
+     */
+    function WindowStage({ mode, fallbackUrl, reloadKey, alt, onError }) {
+      const live = mode === 'origin' || mode === 'bridge'
+      const [src, setSrc] = useState(live ? null : fallbackUrl)
+      useEffect(() => {
+        if (!live) {
+          setSrc(`${fallbackUrl}${fallbackUrl.includes('?') ? '&' : '?'}t=${reloadKey}`)
+          return undefined
+        }
+        let alive = true
+        let timer = null
+        let currentUrl = null
+        let unsubscribe = null
+
+        const show = (blob) => {
+          if (!alive) return
+          const next = URL.createObjectURL(blob)
+          if (currentUrl) URL.revokeObjectURL(currentUrl)
+          currentUrl = next
+          setSrc(next)
+        }
+
+        if (mode === 'bridge') {
+          // push: the bridge iframe long-polls the Host and forwards every frame
+          unsubscribe = subscribeFrames((data) => {
+            try {
+              const binary = atob(data.jpeg)
+              const bytes = new Uint8Array(binary.length)
+              for (let i = 0; i < binary.length; i += 1) bytes[i] = binary.charCodeAt(i)
+              show(new Blob([bytes], { type: 'image/jpeg' }))
+            } catch {
+              /* a truncated frame is simply skipped */
+            }
+          })
+          return () => {
+            alive = false
+            unsubscribe?.()
+            if (currentUrl) URL.revokeObjectURL(currentUrl)
+          }
+        }
+
+        const tick = async () => {
+          try {
+            const res = await fetch(`${API}/frame?t=${Date.now()}`, { headers: { 'x-game-preview': '1' } })
+            if (res.status === 200 && alive) show(await res.blob())
+          } catch {
+            /* the host may be restarting; the next tick retries */
+          }
+          if (alive) timer = setTimeout(tick, 70)
+        }
+        void tick()
+        return () => {
+          alive = false
+          if (timer) clearTimeout(timer)
+          if (currentUrl) URL.revokeObjectURL(currentUrl)
+        }
+      }, [live, mode, fallbackUrl, reloadKey])
+      return h('img', { className: 'gp-shot', src: src ?? undefined, alt: alt ?? 'game window', onError })
+    }
+
+    /* -------------------------------------------------------------- crop */
+
+    /**
+     * Engine editors show the game inside a docked panel; cropping to that panel
+     * is what makes a Unity capture actually look like a game window. The rect
+     * is normalised (0..1) against the captured frame and remembered per window.
+     */
     /* -------------------------------------------------------- device frame */
 
     /**
@@ -532,6 +730,7 @@ window.__ModuleLoader__.load({
       const [rootOverride, setRootOverride] = useState(readStoredRoot)
       const [manualUrl, setManualUrl] = useState('')
       const [immersive, setImmersive] = useState(false)
+      const [crop, setCrop] = useState({ mode: false, rect: null })
       const [windows, setWindows] = useState(null)
       const [roots, setRoots] = useState(null)
       const [winBusy, setWinBusy] = useState(false)
@@ -740,6 +939,27 @@ window.__ModuleLoader__.load({
       }
       const ordered = [...configs].sort((a, b) => rankOf(a) - rankOf(b))
       const primaryCfg = active ? (configs.find((c) => c.id === active.id) ?? ordered[0]) : ordered[0]
+
+      const cropKey = (active) =>
+        `dsh-game-preview.crop:${active?.windowTitle ?? active?.id ?? 'stage'}`
+
+      useEffect(() => {
+        if (!active) return
+        let stored = null
+        try {
+          stored = JSON.parse(window.localStorage.getItem(cropKey(active)) ?? 'null')
+        } catch {}
+        setCrop({ mode: false, rect: stored })
+      }, [active?.windowTitle, active?.id])
+
+      const saveCrop = useCallback((rect) => {
+        setCrop({ mode: false, rect })
+        try {
+          if (rect) window.localStorage.setItem(cropKey(active), JSON.stringify(rect))
+          else window.localStorage.removeItem(cropKey(active))
+        } catch {}
+      }, [active])
+
       const canCapture = capture?.supported !== false
 
       const others = ordered.filter((cfg) => cfg.id !== primaryCfg?.id)
@@ -812,15 +1032,40 @@ window.__ModuleLoader__.load({
       const stage = url
         ? isWindow
           ? h('div', { className: 'gp-stage' },
-              h(DeviceFrame, { viewport },
-                h(WindowStage, {
-                  key: `${url}#${reloadKey}`,
-                  mode: health.mode,
-                  fallbackUrl: url,
-                  reloadKey,
-                  alt: active?.windowTitle ?? 'game window',
-                  onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
-                })),
+              crop.rect
+                ? h('div', { className: 'gp-crop' },
+                    h('div', {
+                      className: 'gp-crop-inner',
+                      style: {
+                        width: `${100 / crop.rect.w}%`,
+                        height: `${100 / crop.rect.h}%`,
+                        left: `${-(crop.rect.x / crop.rect.w) * 100}%`,
+                        top: `${-(crop.rect.y / crop.rect.h) * 100}%`,
+                      },
+                    },
+                      h(WindowStage, {
+                        key: `${url}#${reloadKey}`,
+                        mode: health.mode,
+                        fallbackUrl: url,
+                        reloadKey,
+                        alt: active?.windowTitle ?? 'game window',
+                        onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
+                      })))
+                : h(DeviceFrame, { viewport },
+                    h(WindowStage, {
+                      key: `${url}#${reloadKey}`,
+                      mode: health.mode,
+                      fallbackUrl: url,
+                      reloadKey,
+                      alt: active?.windowTitle ?? 'game window',
+                      onError: () => setError('画面流断了：点 ⟳ 重载重新连接'),
+                    })),
+              crop.mode
+                ? h(CropOverlay, {
+                    onPick: saveCrop,
+                    onCancel: () => setCrop({ mode: false, rect: crop.rect }),
+                  })
+                : null,
               liveBadges.length ? h('div', { className: 'gp-live' }, liveBadges) : null)
           : h('div', { className: 'gp-stage' },
               h(DeviceFrame, { viewport },
@@ -887,6 +1132,17 @@ window.__ModuleLoader__.load({
           }, '✕ 退出满屏'))
       }
 
+      const autoRan = useRef(false)
+      useEffect(() => {
+        if (autoRan.current || !snap || active || !primaryCfg) return
+        if (primaryCfg.kind === 'manual' || primaryCfg.missing) return
+        try {
+          if (window.localStorage.getItem('dsh-game-preview.autoRun') === '0') return
+        } catch {}
+        autoRan.current = true
+        void run(primaryCfg.id)
+      }, [snap, active, primaryCfg, run])
+
       return h('div', { className: 'gp-root' },
         useStyles(),
         h('div', { className: 'gp-chips' },
@@ -938,6 +1194,17 @@ window.__ModuleLoader__.load({
             title: preset.width ? `${preset.width}×${preset.height}` : '铺满舞台',
             onClick: () => setViewport(key),
           }, preset.label)),
+          isWindow
+            ? h('button', {
+                className: 'gp-btn',
+                'data-primary': crop.mode ? '1' : '0',
+                title: crop.rect ? '重新框选显示区域' : '只显示窗口里的一块（比如 Unity 的 Game 视图）',
+                onClick: () => setCrop({ mode: !crop.mode, rect: crop.rect }),
+              }, '✂ 裁剪')
+            : null,
+          isWindow && crop.rect
+            ? h('button', { className: 'gp-btn', title: '恢复整个窗口', onClick: () => saveCrop(null) }, '全窗')
+            : null,
           h('button', { className: 'gp-btn', title: '隐藏所有控件，画面铺满', onClick: () => { setViewport('auto'); setImmersive(true) } }, '⛶ 满屏'),
           h('button', { className: 'gp-btn', disabled: !url, onClick: () => url && window.open(url, '_blank', 'noopener') }, '↗ 外部')),
       )

@@ -331,6 +331,28 @@ export class WindowCapture {
     return () => this.#subscribers.delete(fn)
   }
 
+  /** Resolves with the next frame newer than `seq`, or null after `timeoutMs`. */
+  waitForFrame(seq, timeoutMs = 1500) {
+    const current = this.last()
+    if (current && current.seq > seq) return Promise.resolve(current)
+    return new Promise((resolve) => {
+      let done = false
+      const off = this.onFrame((frame) => {
+        if (done) return
+        done = true
+        clearTimeout(timer)
+        off()
+        resolve(frame)
+      })
+      const timer = setTimeout(() => {
+        if (done) return
+        done = true
+        off()
+        resolve(null)
+      }, timeoutMs)
+    })
+  }
+
   last() {
     return this.#last
   }

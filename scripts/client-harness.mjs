@@ -174,8 +174,8 @@ const windowSnap = {
   running: true,
   capture: { supported: true, running: true, fps: 24.5, width: 1280, height: 720, stale: false, error: null, errorCode: null, black: 0 },
 }
-// useState order in Panel: snap, error, busy, reloadKey, viewport, manualRoot, rootOverride, manualUrl, immersive, windows, roots, winBusy
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, null, null, false]
+// useState order in Panel: snap, error, busy, reloadKey, viewport, manualRoot, rootOverride, manualUrl, immersive, crop, windows, roots, winBusy
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, null, null, false]
 const windowTree = body.component({})
 const shots = []
 const badges = []
@@ -191,7 +191,7 @@ if (!badges.some((b) => b.includes('fps'))) throw new Error(`window stage render
 
 // a stale capture must show the disconnect badge rather than a silent freeze
 const staleSnap = { ...windowSnap, capture: { ...windowSnap.capture, fps: 0, stale: true } }
-react.__states = [staleSnap, null, false, 0, 'auto', '', '', '', false, null, null, false]
+react.__states = [staleSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, null, null, false]
 const staleTree = body.component({})
 const staleBadges = []
 walk(staleTree, (n) => { if (typeof n.children?.[0] === 'string' && n.children[0] === '已断流') staleBadges.push(n.children[0]) })
@@ -212,7 +212,7 @@ walk(windowTree, (n) => {
 if (vpBoxes[0] !== 'auto') throw new Error('stage box did not follow the auto viewport: ' + vpBoxes[0])
 
 // a phone preview must be a 390x844 logical viewport, not a stretched box
-react.__states = [windowSnap, null, false, 0, 'mobile', '', '', '', false, null, null, false]
+react.__states = [windowSnap, null, false, 0, 'mobile', '', '', '', false, { mode: false, rect: null }, null, null, false]
 const phoneTree = body.component({})
 const screens = []
 walk(phoneTree, (n) => {
@@ -235,7 +235,7 @@ walk(windowTree, (n) => {
 if (!dirChips.length) throw new Error('panel did not render a workspace directory chip')
 
 // the window picker renders one option per capturable window
-react.__states = [windowSnap, null, false, 0, 'pc', '', '', '', false, [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
+react.__states = [windowSnap, null, false, 0, 'pc', '', '', '', false, { mode: false, rect: null }, [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
 const pickerTree = body.component({})
 let pickerOptions = 0
 walk(pickerTree, (n) => { if (n.type === 'select') pickerOptions = (n.children ?? []).length })
@@ -244,7 +244,7 @@ if (pickerOptions < 2) throw new Error('window picker rendered no window options
 // no workspace known yet: the panel must offer the discovered directories
 // instead of a dead end that says "nothing detected"
 const noRootSnap = { root: null, configs: [], active: null, dirty: [], running: false, capture: { supported: true } }
-react.__states = [noRootSnap, null, false, 0, 'auto', '', '', '', false, null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
+react.__states = [noRootSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: null }, null, [{ dir: 'F:\\game-a', at: 0 }, { dir: 'F:\\game-b', at: 0 }], false]
 const noRootTree = body.component({})
 const rootOptions = []
 walk(noRootTree, (n) => {
@@ -274,7 +274,7 @@ if (primaryChips.length !== 1) throw new Error(`expected one primary config butt
 if (moreMenus.length !== 1) throw new Error('expected one "other configs" menu')
 
 // immersive mode hides every control and floats a single exit pill
-react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', true, null, null, false]
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', true, { mode: false, rect: null }, null, null, false]
 const immersiveTree = body.component({})
 const exitPills = []
 const chipRows = []
@@ -284,6 +284,25 @@ walk(immersiveTree, (n) => {
 })
 if (exitPills.length !== 1) throw new Error('immersive mode renders no exit control')
 if (chipRows.length !== 0) throw new Error('immersive mode must hide the config row')
+
+// crop tool: selecting a region is a mode, and a stored rect scales the image
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: true, rect: null }, null, null, false]
+const cropModeTree = body.component({})
+const cropLayers = []
+walk(cropModeTree, (n) => {
+  if (typeof n.props?.className === 'string' && n.props.className.includes('gp-crop-layer')) cropLayers.push(n)
+})
+if (cropLayers.length !== 1) throw new Error('crop mode rendered no selection layer')
+
+react.__states = [windowSnap, null, false, 0, 'auto', '', '', '', false, { mode: false, rect: { x: 0.25, y: 0.1, w: 0.5, h: 0.5 } }, null, null, false]
+const croppedTree = body.component({})
+const croppedInners = []
+walk(croppedTree, (n) => {
+  if (typeof n.props?.className === 'string' && n.props.className.includes('gp-crop-inner')) croppedInners.push(n.props.style)
+})
+if (croppedInners.length !== 1) throw new Error('stored crop rect rendered no cropped stage')
+if (croppedInners[0].width !== '200%') throw new Error('crop must zoom the frame: ' + JSON.stringify(croppedInners[0]))
+if (croppedInners[0].left !== '-50%') throw new Error('crop offset is wrong: ' + JSON.stringify(croppedInners[0]))
 
 console.log('modules   ', modules.map((m) => m.id).join(','))
 console.log('tab       ', tab.kind, '| title:', tab.title(), '| guide:', tab.guide.length)

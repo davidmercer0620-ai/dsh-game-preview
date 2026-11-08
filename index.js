@@ -199,22 +199,51 @@ const BRIDGE_HTML = `<!doctype html><meta charset="utf-8"><title>game-preview br
 <script>
 (function () {
   var ALLOWED = /^\\/api\\//;
-  function reply(source, payload) { try { source.postMessage(payload, '*') } catch (e) {} }
+  var subs = new Map();
+  function post(payload) { try { parent.postMessage(payload, '*') } catch (e) {} }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms) }) }
+  function toBase64(buffer) {
+    var bytes = new Uint8Array(buffer), chunk = 0x8000, out = '';
+    for (var i = 0; i < bytes.length; i += chunk) {
+      out += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+    }
+    return btoa(out);
+  }
+  async function pump(id) {
+    var since = 0;
+    while (subs.get(id) === true) {
+      try {
+        var res = await fetch('/api/frame?since=' + since, { headers: { 'x-game-preview': '1' } });
+        if (res.status === 200) {
+          var seq = Number(res.headers.get('x-frame-seq') || 0);
+          var buf = await res.arrayBuffer();
+          if (subs.get(id) !== true) break;
+          since = seq;
+          post({ __gp: 'frame', id: id, seq: seq, jpeg: toBase64(buf) });
+        }
+      } catch (e) {}
+      await sleep(16);
+    }
+    subs.delete(id);
+  }
   window.addEventListener('message', function (event) {
     var msg = event.data;
-    if (!msg || typeof msg !== 'object' || msg.__gp !== 'req') return;
+    if (!msg || typeof msg !== 'object') return;
+    if (msg.__gp === 'sub') { subs.set(msg.id, true); pump(msg.id); return }
+    if (msg.__gp === 'unsub') { subs.set(msg.id, false); return }
+    if (msg.__gp !== 'req') return;
     var id = msg.id, path = String(msg.path || '');
-    if (!ALLOWED.test(path)) { reply(event.source, { __gp: 'res', id: id, status: 0, error: 'path not allowed' }); return }
+    if (!ALLOWED.test(path)) { post({ __gp: 'res', id: id, status: 0, error: 'path not allowed' }); return }
     var init = { method: msg.method || 'GET', headers: { 'x-game-preview': '1' } };
     if (msg.body !== undefined) { init.headers['content-type'] = 'application/json'; init.body = JSON.stringify(msg.body) }
     fetch(path, init).then(function (res) {
       return res.text().then(function (text) {
         var json = null;
         try { json = JSON.parse(text) } catch (e) {}
-        reply(event.source, { __gp: 'res', id: id, status: res.status, json: json, text: json ? undefined : text.slice(0, 400) });
+        post({ __gp: 'res', id: id, status: res.status, json: json, text: json ? undefined : text.slice(0, 400) });
       });
     }).catch(function (err) {
-      reply(event.source, { __gp: 'res', id: id, status: 0, error: String(err && err.message ? err.message : err) });
+      post({ __gp: 'res', id: id, status: 0, error: String(err && err.message ? err.message : err) });
     });
   });
   if (window.parent !== window) window.parent.postMessage({ __gp: 'ready' }, '*');
@@ -1201,9 +1230,11 @@ export function apply(ctx, config = {}) {
       return
     }
 
-    // single latest frame, for clients that would rather poll than hold a stream
+    // single latest frame; ?since=<seq> parks until a newer one exists
     if (path === '/api/frame') {
-      const frame = capture.last()
+      const since = Number(url.searchParams.get('since') ?? '-1')
+      let frame = capture.last()
+      if (since >= 0 && (!frame || frame.seq <= since)) frame = await capture.waitForFrame(since, 1500)
       if (!frame || Date.now() - frame.at > 5000) {
         res.writeHead(204, { ...headers, 'cache-control': 'no-store' })
         res.end()
@@ -1744,8 +1775,10 @@ export function apply(ctx, config = {}) {
       }
     }, 'buffered')
 
-    add(`${API_PREFIX}/frame`, ['GET'], () => {
-      const frame = capture.last()
+    add(`${API_PREFIX}/frame`, ['GET'], async (request) => {
+      const since = Number(new URL(String(request?.url ?? ''), originOf()).searchParams.get('since') ?? '-1')
+      let frame = capture.last()
+      if (since >= 0 && (!frame || frame.seq <= since)) frame = await capture.waitForFrame(since, 1500)
       if (!frame || Date.now() - frame.at > 5000) return new Response(null, { status: 204 })
       return new Response(frame.jpeg, {
         status: 200,
