@@ -1,7 +1,7 @@
 {
-  "name": "dsh-game-preview",
+  "name": "@davidmercer0620-ai/dsh-game-preview",
   "version": "0.5.0",
-  "description": "Game preview panel for DeepSeek Harness: run configurations, native window capture with input forwarding, PC/phone viewports and a live stage inside the right sidebar.",
+  "description": "A game studio plugin for DeepSeek Harness: run your game, capture native windows, and play inside the sidebar.",
   "type": "module",
   "icon": "icon.svg",
   "exports": {

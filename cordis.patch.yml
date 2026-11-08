@@ -1,11 +1,14 @@
+# dsh-game-preview bundle patch: mounts the plugin into a profile layer stack.
+# Override `config` in your profile's cordis.patch.yml, e.g.
+#   config: { port: 7317, captureFps: 24, captureWidth: 0 }
 - insert:
     - id: dsh-game-preview
-      name: dsh-game-preview
+      name: '@davidmercer0620-ai/dsh-game-preview'
       config:
         port: 7317
         waitForMs: 60000
         wechatCli: ''
-        cocosEditor: 'D:/tools/cocos/CocosCreator.exe'
+        cocosEditor: ''
         godotExe: ''
         unityExe: ''
         captureFps: 20
