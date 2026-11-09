@@ -5,7 +5,8 @@
 // user adds its URL; every version pins an exact git commit so an install is
 // reproducible. Re-run after tagging a release and commit the result.
 //
-//   node scripts/make-index.mjs
+//   node scripts/make-index.mjs          # git source, pinned to HEAD
+//   node scripts/make-index.mjs --npm    # npm source, after `npm publish`
 //
 import { execSync } from 'node:child_process'
 import { readFileSync, writeFileSync } from 'node:fs'
@@ -20,6 +21,7 @@ const commit = git('rev-parse HEAD')
 const repo = (pkg.repository?.url ?? git('remote get-url origin')).replace(/^git\+/, '')
 const homepage = pkg.homepage ?? repo.replace(/\.git$/, '')
 const publishedAt = Math.floor(Number(git('show -s --format=%ct HEAD')))
+const useNpm = process.argv.includes('--npm')
 
 const index = {
   format: 1,
@@ -43,7 +45,7 @@ const index = {
         {
           version: pkg.version,
           publishTimestamp: publishedAt,
-          source: { type: 'git', url: repo, commit },
+          source: useNpm ? { type: 'npm' } : { type: 'git', url: repo, commit },
           engines: { dsh: pkg.engines?.dsh ?? '*' },
         },
       ],
