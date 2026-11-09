@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.7.0'
+    const CLIENT_BUILD = '0.7.1'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -757,7 +757,7 @@ window.__ModuleLoader__.load({
                   className: 'gp-size-name',
                   title: '看体积构成',
                   onClick: () => void openBreakdown(row.path),
-                }, `${row.kind} · ${(row.bytes / 1024 / 1024).toFixed(2)} MB`),
+                }, `${row.kind} · ${(row.bytes / 1024 / 1024).toFixed(2)} MB${row.package === 'zip' ? `（提交包 ${row.packageName}，源目录 ${(row.treeBytes / 1024 / 1024).toFixed(2)} MB）` : ''}`),
                 h('span', {
                   className: 'gp-size-pct',
                   'data-warn': row.percent && row.percent >= 80 ? '1' : '0',
@@ -1190,6 +1190,8 @@ window.__ModuleLoader__.load({
       const [crop, setCrop] = useState({ mode: false, rect: null })
       const [pointerMode, setPointerMode] = useState(false)
       const [showExport, setShowExport] = useState(false)
+      const [showLogs, setShowLogs] = useState(false)
+      const [logLines, setLogLines] = useState([])
       const [quality, setQualityState] = useState(() => {
         try {
           const saved = String(window.localStorage.getItem('dsh-game-preview.quality') ?? '')
@@ -1358,6 +1360,23 @@ window.__ModuleLoader__.load({
           setBusy(false)
         }
       }, [])
+
+      useEffect(() => {
+        if (!showLogs) return undefined
+        let alive = true
+        const tick = async () => {
+          try {
+            const next = await call('/api/log')
+            if (alive) setLogLines(next.lines ?? [])
+          } catch {}
+        }
+        void tick()
+        const timer = setInterval(() => void tick(), 1500)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [showLogs])
 
       const imageRef = useRef(null)
 
@@ -1871,6 +1890,17 @@ window.__ModuleLoader__.load({
           : null,
         stage,
         showExport ? h(ExportPanel, { onClose: () => setShowExport(false), root: snap?.root ?? '' }) : null,
+        showLogs
+          ? h('div', { className: 'gp-export' },
+              h('div', { className: 'gp-export-head' },
+                h('strong', null, '控制台'),
+                h('span', { className: 'gp-note', style: { flex: 1, fontSize: 10 } }, snap?.running ? 'dev server / 引擎输出' : '当前没有进程'),
+                h('button', { className: 'gp-btn', onClick: () => setShowLogs(false) }, '关闭')),
+              h('div', { className: 'gp-export-log', style: { maxHeight: 160 } },
+                logLines.length
+                  ? logLines.map((line, i) => h('div', { key: i }, line))
+                  : h('div', { className: 'gp-note' }, '（空）')))
+          : null,
         h('div', { className: 'gp-bar' },
           h('button', { className: 'gp-btn', 'data-primary': '1', disabled: busy || !configs.length, onClick: () => void run(active?.id) }, '▶ 运行'),
           h('button', { className: 'gp-btn', disabled: !url, title: '重新加载预览', onClick: () => setReloadKey((n) => n + 1) }, '⟳ 重载'),
@@ -1914,6 +1944,12 @@ window.__ModuleLoader__.load({
           isWindow
             ? h('button', { className: 'gp-btn', title: '把当前画面存成 JPG', onClick: () => void saveShot() }, '⤓ 截图')
             : null,
+          h('button', {
+            className: 'gp-btn',
+            'data-primary': showLogs ? '1' : '0',
+            title: '看 dev server / 引擎的输出',
+            onClick: () => setShowLogs((on) => !on),
+          }, '⌨ 控制台'),
           h('button', {
             className: 'gp-btn',
             'data-primary': showExport ? '1' : '0',

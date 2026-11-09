@@ -537,18 +537,33 @@ function sizeReport(root) {
     for (const rel of paths) {
       const dir = join(root, rel)
       if (!existsSync(dir)) continue
-      let size = 0
+      let tree = 0
       try {
-        size = dirSize(dir)
+        tree = dirSize(dir)
       } catch {}
-      if (!size) continue
+      if (!tree) continue
+      // a store that takes a zip (TapTap) judges the archive, not the unpacked
+      // tree: counting both double-counts and inflates the result
+      let zip = null
+      try {
+        for (const name of readdirSync(dir)) {
+          if (!/\.zip$/i.test(name)) continue
+          const file = join(dir, name)
+          const stat = statSync(file)
+          if (!zip || stat.size > zip.bytes) zip = { file: name, bytes: stat.size }
+        }
+      } catch {}
+      const bytes = zip ? zip.bytes : tree
       const limit = rel.includes('web') ? SIZE_LIMITS.web : SIZE_LIMITS[kind]
       out.push({
         kind,
         path: rel,
-        bytes: size,
+        bytes,
+        treeBytes: tree,
+        package: zip ? 'zip' : 'dir',
+        packageName: zip?.file ?? null,
         limit,
-        percent: limit ? Math.round((size / limit) * 1000) / 10 : null,
+        percent: limit ? Math.round((bytes / limit) * 1000) / 10 : null,
       })
     }
   }
