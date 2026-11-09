@@ -414,36 +414,80 @@ function listTasks(root, config) {
     tasks.push(task)
   }
 
-  const pkg = has(root, 'package.json') ? safeJson(join(root, 'package.json')) : null
-  for (const [name, body] of Object.entries(pkg?.scripts ?? {})) {
-    const group = TASK_GROUPS.find((g) => g.test.test(name))?.key ?? 'other'
-    push({
-      id: `npm:${name}`,
-      label: name,
-      group,
-      kind: 'npm',
-      cmd: 'npm run ' + name,
-      detail: String(body).slice(0, 80),
-    })
-  }
+  // studio projects keep the engine project one level down (F:\game\cocos),
+  // so scripts are collected from the root and every immediate subdirectory
+  const dirs = [{ rel: '.', abs: root }]
+  try {
+    for (const name of readdirSync(root)) {
+      if (name.startsWith('.') || IGNORE.includes(name)) continue
+      const abs = join(root, name)
+      try {
+        if (!statSync(abs).isDirectory()) continue
+      } catch {
+        continue
+      }
+      const looksLikeProject =
+        existsSync(join(abs, 'android')) ||
+        existsSync(join(abs, 'tools')) ||
+        existsSync(join(abs, 'settings')) ||
+        existsSync(join(abs, 'project.godot')) ||
+        existsSync(join(abs, 'ProjectSettings'))
+      if (looksLikeProject) dirs.push({ rel: name, abs })
+    }
+  } catch {}
 
-  if (has(root, 'android/build.sh')) {
-    push({ id: 'sh:android/build.sh', label: 'APK · android/build.sh', group: 'build', kind: 'shell', cmd: toPosixPath(join(root, 'android', 'build.sh')), detail: '项目自带的安卓打包脚本' })
-  }
-  if (has(root, 'build_apk.js')) {
-    push({ id: 'node:build_apk.js', label: 'APK · build_apk.js', group: 'build', kind: 'node', cmd: 'build_apk.js', detail: '项目自带的 APK 脚本' })
-  }
-  if (has(root, 'tools/build-platform.mjs')) {
-    for (const platform of ['wechat', 'douyin', 'taptap']) {
+  for (const dir of dirs) {
+    const pkg = existsSync(join(dir.abs, 'package.json')) ? safeJson(join(dir.abs, 'package.json')) : null
+    for (const [name, body] of Object.entries(pkg?.scripts ?? {})) {
+      const group = TASK_GROUPS.find((g) => g.test.test(name))?.key ?? 'other'
       push({
-        id: `node:tools/build-platform.mjs:${platform}`,
-        label: `${platform} 包`,
+        id: `npm:${dir.rel}:${name}`,
+        label: dir.rel === '.' ? name : `${dir.rel} · ${name}`,
+        group,
+        kind: 'npm',
+        cwd: dir.abs,
+        cmd: 'npm run ' + name,
+        detail: String(body).slice(0, 80),
+      })
+    }
+
+    if (existsSync(join(dir.abs, 'android', 'build.sh'))) {
+      push({
+        id: `sh:${dir.rel}:android`,
+        label: dir.rel === '.' ? 'APK · android/build.sh' : `${dir.rel} · APK（android/build.sh）`,
+        group: 'build',
+        kind: 'shell',
+        cwd: dir.abs,
+        cmd: toPosixPath(join(dir.abs, 'android', 'build.sh')),
+        detail: '项目自带的安卓打包脚本',
+      })
+    }
+    if (existsSync(join(dir.abs, 'build_apk.js'))) {
+      push({
+        id: `node:${dir.rel}:build_apk.js`,
+        label: dir.rel === '.' ? 'APK · build_apk.js' : `${dir.rel} · APK（build_apk.js）`,
         group: 'build',
         kind: 'node',
-        cmd: 'tools/build-platform.mjs',
-        args: [platform],
-        detail: 'tools/build-platform.mjs',
+        cwd: dir.abs,
+        cmd: 'build_apk.js',
+        detail: '项目自带的 APK 脚本',
       })
+    }
+    const scriptNames = Object.keys(pkg?.scripts ?? {}).map((n) => n.toLowerCase())
+    if (existsSync(join(dir.abs, 'tools', 'build-platform.mjs'))) {
+      for (const platform of ['wechat', 'douyin', 'taptap']) {
+        if (scriptNames.some((n) => n.includes(platform))) continue
+        push({
+          id: `node:${dir.rel}:build-platform:${platform}`,
+          label: `${dir.rel === '.' ? '' : dir.rel + ' · '}${platform} 包`,
+          group: 'build',
+          kind: 'node',
+          cwd: dir.abs,
+          cmd: 'tools/build-platform.mjs',
+          args: [platform],
+          detail: 'tools/build-platform.mjs',
+        })
+      }
     }
   }
 
@@ -1249,15 +1293,16 @@ export function apply(ctx, config = {}) {
     void (async () => {
       try {
         exportPush(`# ${task.label} — ${task.detail ?? task.cmd}`)
+        const cwd = task.cwd ?? root
         if (task.kind === 'npm') {
-          await runProcess('cmd.exe', ['/d', '/s', '/c', task.cmd], root, task.cmd, 30 * 60 * 1000, runEnv)
+          await runProcess('cmd.exe', ['/d', '/s', '/c', task.cmd], cwd, task.cmd, 30 * 60 * 1000, runEnv)
         } else if (task.kind === 'shell') {
           const bash = findPosixBash()
           if (!bash) throw new Error('没有找到 Git Bash，无法执行 .sh 脚本')
-          await runProcess(bash, [task.cmd], root, task.label, 30 * 60 * 1000, runEnv)
+          await runProcess(bash, [task.cmd], cwd, task.label, 30 * 60 * 1000, runEnv)
         } else {
           const node = process.execPath
-          await runProcess(node, [task.cmd, ...(task.args ?? [])], root, task.label, 30 * 60 * 1000, runEnv)
+          await runProcess(node, [task.cmd, ...(task.args ?? [])], cwd, task.label, 30 * 60 * 1000, runEnv)
         }
         exportJob.result = { kind: 'task', file: null, size: null }
         exportPush(`完成：${task.label}`)
