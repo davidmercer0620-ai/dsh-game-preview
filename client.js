@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.5.17'
+    const CLIENT_BUILD = '0.5.18'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -1008,6 +1008,7 @@ window.__ModuleLoader__.load({
         key: `${src}#${viewport}`,
         className: 'gp-frame',
         'data-vp': viewport,
+        scrolling: 'no',
         src,
         title: title ?? 'game preview',
         sandbox: 'allow-scripts allow-pointer-lock allow-popups allow-modals',
@@ -1350,6 +1351,8 @@ window.__ModuleLoader__.load({
       const dirty = snap?.dirty ?? []
       const capture = snap?.capture ?? null
       const isWindow = active?.kind === 'window'
+      const activeId = String(active?.id ?? '')
+      const buildKind = /web-desktop/i.test(activeId) ? 'desktop' : /web-mobile/i.test(activeId) ? 'mobile' : null
       const url = active?.url ?? null
       // Build outputs beat dev servers beat engine editors beat the WeChat shell.
       const rankOf = (cfg) => {
@@ -1562,6 +1565,12 @@ window.__ModuleLoader__.load({
                 })))
         : empty
 
+      const viewportHint = !isWindow && buildKind === 'desktop' && viewport === 'mobile'
+        ? '这个包是 PC 构建（web-desktop 不会自适应画布），手机预览会溢出并出现滚动条。切到「构建产物 · web-mobile」才是竖屏适配。'
+        : !isWindow && buildKind === 'mobile' && viewport === 'pc'
+          ? '这个包是手机构建（竖屏固定），PC 视口会留出大边距，建议切「手机」。'
+          : null
+
       const blackHint = isWindow && capture?.errorCode === 'printwindow-failed'
         ? '这个窗口抓不到画面（常见于独占全屏）：把游戏改成窗口/无边框模式再重试。'
         : isWindow && capture?.black > 3
@@ -1679,6 +1688,7 @@ window.__ModuleLoader__.load({
         !health.mode && health.attempts
           ? h('div', { className: 'gp-attempts' }, health.attempts.map((line, i) => h('div', { key: i }, line)))
           : null,
+        viewportHint ? h('div', { className: 'gp-hint' }, viewportHint) : null,
         blackHint
           ? h('div', { className: 'gp-hint' },
               blackHint,
