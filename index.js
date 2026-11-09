@@ -9,7 +9,7 @@ import { createServer } from 'node:http'
 import { createHash, randomBytes } from 'node:crypto'
 import { spawn, execFile, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, watch, writeFileSync } from 'node:fs'
-import { dirname, join, resolve, sep } from 'node:path'
+import { basename, dirname, join, resolve, sep } from 'node:path'
 import { networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { WindowCapture } from './host/window.js'
@@ -986,7 +986,7 @@ export function apply(ctx, config = {}) {
   // Frames are only kept when the picture actually changes: an agent that works
   // for ten minutes in the editor produces a handful of meaningful stills, not
   // a video stream. That is the point — review the result, not the process.
-  const timeline = { enabled: false, frames: [], lastHash: null, lastAt: 0, seq: 0, root: null }
+  const timeline = { enabled: config.timelineAuto !== false, frames: [], lastHash: null, lastAt: 0, seq: 0, root: null }
   const history = { loaded: false, items: [] }
   const capture = new WindowCapture({
     helperPath: join(HERE, 'host', 'window-capture.ps1'),
@@ -1568,6 +1568,58 @@ export function apply(ctx, config = {}) {
     return exportStatus()
   }
 
+  /** Every workspace worth a card: live agents, the registry, and the current root. */
+  function projectRoots() {
+    const seen = new Set()
+    const push = (dir) => {
+      if (!dir) return
+      try {
+        const abs = resolve(dir)
+        if (existsSync(abs)) seen.add(abs)
+      } catch {}
+    }
+    for (const row of liveAgentDirs()) push(row.dir)
+    for (const dir of registryDirs()) push(dir)
+    push(state.lastRoot ?? '')
+    return [...seen]
+  }
+
+  function projectSummary(root) {
+    const tl = join(root, '.dsh-game-preview', 'timeline')
+    let frames = 0
+    let lastAt = 0
+    let lastFile = null
+    try {
+      const items = JSON.parse(readFileSync(join(tl, 'index.json'), 'utf8'))
+      frames = items.length
+      const last = items[items.length - 1]
+      if (last) {
+        lastAt = last.at
+        lastFile = join(tl, last.name)
+      }
+    } catch {}
+    let distBytes = 0
+    try {
+      distBytes = dirSize(join(root, DIST))
+    } catch {}
+    return {
+      root,
+      name: basename(root) || root,
+      frames,
+      lastAt: lastAt || null,
+      thumb: lastFile && existsSync(lastFile) ? lastFile : null,
+      distBytes,
+      recent: lastAt ? Date.now() - lastAt : null,
+    }
+  }
+
+  function projectBoard() {
+    return projectRoots()
+      .map((root) => projectSummary(root))
+      .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0))
+      .slice(0, 24)
+  }
+
   function timelineDir(root) {
     return join(root, '.dsh-game-preview', 'timeline')
   }
@@ -1597,7 +1649,7 @@ export function apply(ctx, config = {}) {
     const root = state.lastRoot
     if (!root) return
     const now = Date.now()
-    const minGap = Number(config.timelineMinMs) || 4000
+    const minGap = Number(config.timelineMinMs) || (timeline.enabled ? 8000 : 4000)
     if (now - timeline.lastAt < minGap) return
     const hash = createHash('sha1').update(frame.jpeg).digest('hex')
     if (hash === timeline.lastHash) return
@@ -2202,6 +2254,34 @@ print('ok')
       try {
         execFile('explorer.exe', ['/select,', target], () => {})
         send(res, headers, { ok: true })
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 500)
+      }
+      return
+    }
+
+    if (path === '/api/projects' && req.method === 'GET') {
+      send(res, headers, { ok: true, projects: projectBoard() })
+      return
+    }
+
+    if (path === '/api/project-thumb' && req.method === 'GET') {
+      const root = url.searchParams.get('root') ?? ''
+      const allowed = projectRoots()
+      const target = allowed.find((dir) => dir === resolve(root))
+      if (!target) {
+        send(res, headers, { ok: false, error: '不在项目列表里' }, 403)
+        return
+      }
+      const summary = projectSummary(target)
+      if (!summary.thumb) {
+        send(res, headers, { ok: false, error: '还没有缩略图' }, 404)
+        return
+      }
+      try {
+        const data = readFileSync(summary.thumb)
+        res.writeHead(200, { ...headers, 'content-type': 'image/jpeg', 'cache-control': 'no-store' })
+        res.end(data)
       } catch (error) {
         send(res, headers, { ok: false, error: String(error?.message ?? error) }, 500)
       }
@@ -2970,6 +3050,8 @@ print('ok')
         return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
       }
     }, 'buffered')
+
+    add(`${API_PREFIX}/projects`, ['GET'], () => jsonResponse({ ok: true, projects: projectBoard() }))
 
     add(`${API_PREFIX}/timeline`, ['GET'], () => {
       const root = state.lastRoot

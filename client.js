@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.8.0'
+    const CLIENT_BUILD = '0.9.0'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -405,6 +405,16 @@ window.__ModuleLoader__.load({
       .gp-bar-fill{display:block;height:100%;background:color-mix(in srgb, currentColor 55%, transparent)}
       .gp-bar-val{width:58px;text-align:right;opacity:.7}
       .gp-size-pct[data-warn="1"]{color:#d98c2f;opacity:1}
+      .gp-board{border-top:1px solid color-mix(in srgb, currentColor 14%, transparent);padding:8px 10px;display:flex;flex-direction:column;gap:8px;
+        background:color-mix(in srgb, currentColor 4%, transparent);max-height:52%;overflow:auto}
+      .gp-board-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(112px,1fr));gap:8px}
+      .gp-card{display:flex;flex-direction:column;gap:3px;padding:0;border:1px solid color-mix(in srgb, currentColor 14%, transparent);border-radius:8px;
+        background:transparent;color:inherit;cursor:pointer;overflow:hidden;text-align:left;font:inherit}
+      .gp-card:hover{border-color:color-mix(in srgb, currentColor 34%, transparent)}
+      .gp-card-img{width:100%;aspect-ratio:3/4;object-fit:cover;object-position:top;display:block;background:color-mix(in srgb, currentColor 8%, transparent)}
+      .gp-card-empty{width:100%;aspect-ratio:3/4;display:flex;align-items:center;justify-content:center;opacity:.35}
+      .gp-card-name{font-size:10px;padding:0 5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .gp-card-meta{font-size:9px;opacity:.55;padding:0 5px 5px}
       .gp-shots{display:flex;gap:4px;flex-wrap:wrap}
       .gp-shot{font-size:10px;padding:2px 6px;border-radius:5px;background:color-mix(in srgb, currentColor 10%, transparent);opacity:.75}
       .gp-export-result{display:flex;align-items:center;gap:8px;font-size:11px}
@@ -1247,6 +1257,8 @@ window.__ModuleLoader__.load({
       const [timeline, setTimeline] = useState(null)
       const [gifBusy, setGifBusy] = useState(false)
       const [gifResult, setGifResult] = useState(null)
+      const [board, setBoard] = useState(null)
+      const [showBoard, setShowBoard] = useState(false)
       const [quality, setQualityState] = useState(() => {
         try {
           const saved = String(window.localStorage.getItem('dsh-game-preview.quality') ?? '')
@@ -1961,6 +1973,15 @@ window.__ModuleLoader__.load({
               canCapture ? h('button', { className: 'gp-btn', style: { marginLeft: 8 }, onClick: () => void openPicker() }, '换一个窗口') : null)
           : null,
         stage,
+        showBoard
+          ? h(ProjectBoard, {
+              onClose: () => setShowBoard(false),
+              onOpen: (root) => {
+                setShowBoard(false)
+                setRootOverride(root)
+              },
+            })
+          : null,
         showExport ? h(ExportPanel, { onClose: () => setShowExport(false), root: snap?.root ?? '' }) : null,
         showLogs
           ? h('div', { className: 'gp-export' },
@@ -2016,6 +2037,12 @@ window.__ModuleLoader__.load({
           isWindow
             ? h('button', { className: 'gp-btn', title: '把当前画面存成 JPG', onClick: () => void saveShot() }, '⤓ 截图')
             : null,
+          h('button', {
+            className: 'gp-btn',
+            'data-primary': showBoard ? '1' : '0',
+            title: '所有项目的最新画面',
+            onClick: () => setShowBoard((on) => !on),
+          }, '🗂 项目'),
           h('button', {
             className: 'gp-btn',
             'data-primary': showLogs ? '1' : '0',
@@ -2104,6 +2131,57 @@ window.__ModuleLoader__.load({
         return h('div', { style: { padding: 12, fontSize: 11, color: '#d9534f', whiteSpace: 'pre-wrap', lineHeight: 1.5 } },
           '游戏预览面板崩溃：\n' + text.slice(0, 900))
       }
+    }
+
+    function ProjectBoard({ onClose, onOpen }) {
+      const [projects, setProjects] = useState(null)
+      const [error, setError] = useState(null)
+      useEffect(() => {
+        let alive = true
+        void (async () => {
+          try {
+            const next = await call('/api/projects')
+            if (alive) setProjects(next.projects ?? [])
+          } catch (err) {
+            if (alive) setError(String(err?.message ?? err))
+          }
+        })()
+        return () => {
+          alive = false
+        }
+      }, [])
+      const ago = (at) => {
+        if (!at) return '还没有画面'
+        const min = Math.round((Date.now() - at) / 60000)
+        if (min < 1) return '刚刚'
+        if (min < 60) return `${min} 分钟前`
+        const hour = Math.round(min / 60)
+        if (hour < 24) return `${hour} 小时前`
+        return `${Math.round(hour / 24)} 天前`
+      }
+      return h('div', { className: 'gp-board' },
+        h('div', { className: 'gp-export-head' },
+          h('strong', null, '项目'),
+          h('span', { className: 'gp-note', style: { flex: 1, fontSize: 10 } },
+            '每个项目最近一张变化画面 · 点开切换'),
+          h('button', { className: 'gp-btn', onClick: onClose }, '关闭')),
+        error ? h('div', { className: 'gp-err' }, error) : null,
+        !projects
+          ? h('div', { className: 'gp-note' }, '读取中…')
+          : projects.length
+            ? h('div', { className: 'gp-board-grid' }, ...projects.map((project) =>
+                h('button', {
+                  key: project.root,
+                  className: 'gp-card',
+                  title: project.root,
+                  onClick: () => onOpen(project.root),
+                },
+                project.thumb
+                  ? h('img', { className: 'gp-card-img', src: `/api/project-thumb?root=${encodeURIComponent(project.root)}&v=${project.lastAt ?? 0}`, alt: project.name })
+                  : h('span', { className: 'gp-card-empty' }, '—'),
+                h('span', { className: 'gp-card-name' }, project.name),
+                h('span', { className: 'gp-card-meta' }, `${project.frames} 帧 · ${ago(project.lastAt)}`))))
+            : h('div', { className: 'gp-note' }, '还没有任何带时间线的项目'))
     }
 
     function CrashReport({ error }) {

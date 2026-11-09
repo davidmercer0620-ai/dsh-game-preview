@@ -171,6 +171,23 @@ const blocked = await fetch(base + '/static/' + forged + '/win.ini')
 console.log('unregistered root', blocked.status)
 if (blocked.status !== 403) throw new Error('static route must refuse unregistered roots')
 
+/* ------------------------------------------------ project board */
+
+console.log('\n--- project board ---')
+
+const board = await (await fetch(base + '/api/projects')).json()
+console.log('projects:', (board.projects ?? []).length, '|', (board.projects ?? []).map((p) => p.name).join(', ').slice(0, 60))
+if (!Array.isArray(board.projects)) throw new Error('projects endpoint returned no array')
+const withRoot = (board.projects ?? [])[0]
+if (withRoot && withRoot.thumb) {
+  const thumb = await fetch(`${base}/api/project-thumb?root=${encodeURIComponent(withRoot.root)}`)
+  console.log('thumb', thumb.status, thumb.headers.get('content-type'))
+  if (thumb.status !== 200) throw new Error('thumbnail was not served')
+}
+const forbidden = await fetch(`${base}/api/project-thumb?root=${encodeURIComponent('C:/Windows')}`)
+console.log('thumb outside the list:', forbidden.status)
+if (forbidden.status !== 403) throw new Error('thumbnails must be contained to listed projects')
+
 /* ------------------------------------------------ project tasks + sizes */
 
 console.log('\n--- project tasks ---')
