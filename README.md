@@ -15,10 +15,10 @@ Made by **邮差游戏工作室 / Postman Game Studio**.
 **English** · [简体中文](README.zh.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md)
 
 <p align="center">
-  <img src="docs/images/panel-phone.png" alt="The game preview tab in the right sidebar, showing a 390x844 phone frame" width="420">
+  <img src="docs/images/demo.gif" alt="The game preview tab in the right sidebar: a 390x844 phone frame around a Cocos build" width="460">
 </p>
 
-<p align="center"><em>Phone viewport (390×844) running the exported Cocos build, with the run bar, packaging and console below.</em></p>
+<p align="center"><em>The 游戏预览 tab: engine/build chips, a real 390×844 phone viewport, and the run bar with packaging, console and export below.</em></p>
 
 <p align="center">
   <img src="docs/images/unity-native-capture.jpg" alt="A native Unity window captured into the sidebar" width="720">
