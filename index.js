@@ -1644,9 +1644,20 @@ export function apply(ctx, config = {}) {
     return timeline.frames
   }
 
+  /** A window can be attached before any workspace is known; fall back to the
+   *  session's working directory instead of dropping the frame. */
+  function currentRootSync() {
+    if (state.lastRoot) return state.lastRoot
+    try {
+      const dir = discoverRoot()
+      if (dir) return dir
+    } catch {}
+    return null
+  }
+
   function timelineRecord(frame) {
     if (!timeline.enabled || !frame?.jpeg?.length) return
-    const root = state.lastRoot
+    const root = currentRootSync()
     if (!root) return
     const now = Date.now()
     const minGap = Number(config.timelineMinMs) || (timeline.enabled ? 8000 : 4000)
@@ -2295,7 +2306,7 @@ print('ok')
         ok: true,
         enabled: timeline.enabled,
         minGapMs: Number(config.timelineMinMs) || 4000,
-        dir: root ? timelineDir(root) : null,
+        dir: (root ?? currentRootSync()) ? timelineDir(root ?? currentRootSync()) : null,
         frames: timeline.frames.map((f) => ({ at: f.at, name: f.name, bytes: f.bytes, width: f.width, height: f.height })),
       })
       return
@@ -3060,7 +3071,7 @@ print('ok')
         ok: true,
         enabled: timeline.enabled,
         minGapMs: Number(config.timelineMinMs) || 4000,
-        dir: root ? timelineDir(root) : null,
+        dir: (root ?? currentRootSync()) ? timelineDir(root ?? currentRootSync()) : null,
         frames: timeline.frames.map((f) => ({ at: f.at, name: f.name, bytes: f.bytes, width: f.width, height: f.height })),
       })
     })
