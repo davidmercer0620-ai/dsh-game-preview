@@ -36,6 +36,8 @@ That is right, and it changed the design. Watching a live feed of an idle editor
 
 - **⏺ Result timeline** keeps a still only when the picture really changes (hash-gated, at most one every 4 s), so ten minutes of agent work becomes a handful of frames — a few hundred KB, near-zero CPU.
 - **One click makes a GIF** of those frames, straight into your project folder, ready to paste into a review or a PR.
+- **🗂 Project board** for the other half of the complaint — one screen, several games. Every workspace DSH knows appears as a card with its newest frame, frame count and last change; click one to switch the panel to it.
+- Recording is on by default and change-gated (8 s floor), so there is nothing to press and an idle editor stores nothing.
 - No continuous rendering, no second monitor required: open the panel when you want to *check the result*, not to babysit it.
 
 <p align="center">
@@ -77,6 +79,7 @@ Every engine has one loop that is faster than all the others. The panel picks th
 | **Bundle size budget** | Per-platform sizes against the store limits (WeChat/Douyin/TapTap 4 MB, web 32 MB), warn at 80%; click a row for the directory/extension/file breakdown |
 | **Phone preview by QR** | Shares the running static build over the LAN behind a random token, shows a QR (host-side python-qrcode, no client dependency), expires after 30 minutes |
 | **Build history** | Every export and project-script run is appended to `.dsh-game-preview/history.json`; the panel shows duration and byte delta |
+| **Project board** | A thumbnail wall of every workspace with its latest recorded frame; click to switch the panel |
 | **Agent eyes** | `game_preview_screenshot` saves the current frame into the project and returns its path; `game_preview_logs` returns the process tail, so the agent can inspect the game itself |
 | **Hotkeys** | `F` full-bleed · `R` reload · `Esc` leave |
 
