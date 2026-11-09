@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.5.16'
+    const CLIENT_BUILD = '0.5.17'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -209,12 +209,23 @@ window.__ModuleLoader__.load({
       })
     }
 
+    function resetBridge() {
+      try {
+        bridge.frame?.remove()
+      } catch {}
+      bridge.frame = null
+      bridge.port = null
+      bridge.ready = null
+    }
+
     function bridgeCall(path, init = {}, timeoutMs = 4000) {
       if (!bridge.frame || !bridge.port) return Promise.reject(new Error('bridge 未连接'))
       const id = ++bridge.seq
       return new Promise((resolve, reject) => {
         const timer = setTimeout(() => {
           bridge.waiters.delete(id)
+          // the host restarted, or the frame navigated away: force a rebuild
+          resetBridge()
           reject(new Error(`bridge 超时 ${timeoutMs}ms`))
         }, timeoutMs)
         bridge.waiters.set(id, (data) => {
@@ -347,6 +358,7 @@ window.__ModuleLoader__.load({
         const message = String(error?.message ?? error)
         if (!/超时|网络错误|未连接|Failed|fetch|bridge/i.test(message)) throw error
         endpoint = null
+        resetBridge()
         base = await probe()
         if (!base) throw error
         return httpJson(base + rel, init)
