@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.5.18'
+    const CLIENT_BUILD = '0.5.19'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -1365,7 +1365,17 @@ window.__ModuleLoader__.load({
         if (cfg.kind === 'native') return 5
         return 9
       }
-      const ordered = [...configs].sort((a, b) => rankOf(a) - rankOf(b))
+      const buildOf = (cfg) => {
+        const id = String(cfg?.id ?? '')
+        if (/web-mobile/i.test(id)) return 'mobile'
+        if (/web-desktop/i.test(id)) return 'desktop'
+        return null
+      }
+      const wantedBuild = viewport === 'mobile' ? 'mobile' : viewport === 'pc' ? 'desktop' : null
+      const ranked = [...configs].sort((a, b) => rankOf(a) - rankOf(b))
+      const ordered = wantedBuild
+        ? [...ranked.filter((c) => buildOf(c) === wantedBuild), ...ranked.filter((c) => buildOf(c) !== wantedBuild)]
+        : ranked
       const lastUsed = (() => {
         try {
           const saved = String(window.localStorage.getItem(`dsh-game-preview.config:${snap?.root ?? ''}`) ?? '')
@@ -1613,6 +1623,19 @@ window.__ModuleLoader__.load({
                 `${w.title.slice(0, 48)} — ${w.width}×${w.height}`))),
             h('button', { className: 'gp-btn', onClick: () => setWindows(null) }, '取消'))
         : null
+
+      const buildSwitch = useRef('')
+      useEffect(() => {
+        if (!wantedBuild || !active) return
+        const currentKind = /web-mobile/i.test(activeId) ? 'mobile' : /web-desktop/i.test(activeId) ? 'desktop' : null
+        if (!currentKind || currentKind === wantedBuild) return
+        const target = configs.find((c) => buildOf(c) === wantedBuild)
+        if (!target) return
+        const key = `${wantedBuild}:${target.id}`
+        if (buildSwitch.current === key) return
+        buildSwitch.current = key
+        void run(target.id)
+      }, [wantedBuild, activeId, configs, run])
 
       const autoRan = useRef(false)
       useEffect(() => {
