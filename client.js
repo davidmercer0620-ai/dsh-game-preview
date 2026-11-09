@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.5.19'
+    const CLIENT_BUILD = '0.7.0'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -397,6 +397,13 @@ window.__ModuleLoader__.load({
       .gp-export-group{display:flex;flex-direction:column;gap:2px}
       .gp-size-row{display:flex;align-items:center;gap:8px;font-size:11px}
       .gp-size-pct{font-size:10px;opacity:.7}
+      .gp-size-name{flex:1;min-width:0;text-align:left;font:inherit;font-size:11px;color:inherit;background:transparent;border:0;cursor:pointer;padding:0;word-break:break-all}
+      .gp-size-name:hover{text-decoration:underline}
+      .gp-bar-row{display:flex;align-items:center;gap:6px;font-size:10px}
+      .gp-bar-name{width:96px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+      .gp-bar-track{flex:1;height:6px;border-radius:3px;background:color-mix(in srgb, currentColor 12%, transparent);overflow:hidden}
+      .gp-bar-fill{display:block;height:100%;background:color-mix(in srgb, currentColor 55%, transparent)}
+      .gp-bar-val{width:58px;text-align:right;opacity:.7}
       .gp-size-pct[data-warn="1"]{color:#d98c2f;opacity:1}
       .gp-export-result{display:flex;align-items:center;gap:8px;font-size:11px}
       .gp-crop{position:absolute;inset:0;overflow:hidden;background:#000}
@@ -496,6 +503,9 @@ window.__ModuleLoader__.load({
         }
       })
       const [showEnv, setShowEnv] = useState(false)
+      const [breakdown, setBreakdown] = useState(null)
+      const [share, setShare] = useState(null)
+      const [history, setHistory] = useState([])
 
       const parseEnv = () => {
         const out = {}
@@ -507,6 +517,55 @@ window.__ModuleLoader__.load({
           out[trimmed.slice(0, eq).trim()] = trimmed.slice(eq + 1).trim()
         }
         return out
+      }
+
+      useEffect(() => {
+        let alive = true
+        void (async () => {
+          try {
+            const [h, sh] = await Promise.all([call('/api/history'), call('/api/share')])
+            if (alive) {
+              setHistory(h.items ?? [])
+              setShare(sh.active ? sh : null)
+            }
+          } catch {}
+        })()
+        return () => {
+          alive = false
+        }
+      }, [])
+
+      const startShare = async () => {
+        setBusy(true)
+        setError(null)
+        try {
+          const result = await call('/api/share', { method: 'POST', body: JSON.stringify({ minutes: 30 }) })
+          setShare(result)
+          if (!result.url) setError('没有找到局域网 IP：手机可能连不上这台机器')
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        } finally {
+          setBusy(false)
+        }
+      }
+
+      const stopShare = async () => {
+        try {
+          await call('/api/share/stop', { method: 'POST', body: '{}' })
+        } catch {}
+        setShare(null)
+      }
+
+      const openBreakdown = async (path) => {
+        if (breakdown?.path === path) {
+          setBreakdown(null)
+          return
+        }
+        try {
+          setBreakdown(await call(`/api/size?path=${encodeURIComponent(path)}`))
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        }
       }
 
       useEffect(() => {
@@ -629,6 +688,50 @@ window.__ModuleLoader__.load({
               disabled: busy || state?.running || !ready(target.id),
               onClick: () => void start(target.id),
             }, '导出'))),
+        breakdown
+          ? h('div', { className: 'gp-export-section' },
+              h('div', { className: 'gp-export-head' },
+                h('strong', null, '体积构成'),
+                h('span', { className: 'gp-note', style: { fontSize: 10, flex: 1 } }, breakdown.path),
+                h('button', { className: 'gp-btn', onClick: () => setBreakdown(null) }, '收起')),
+              ...(breakdown.dirs ?? []).map((row) => h('div', { key: 'd' + row.name, className: 'gp-bar-row' },
+                h('span', { className: 'gp-bar-name' }, row.name),
+                h('span', { className: 'gp-bar-track' }, h('span', { className: 'gp-bar-fill', style: { width: `${Math.min(100, row.percent)}%` } })),
+                h('span', { className: 'gp-bar-val' }, `${(row.bytes / 1024 / 1024).toFixed(2)} MB`))),
+              ...(breakdown.files ?? []).slice(0, 5).map((row) => h('div', { key: 'f' + row.path, className: 'gp-size-row' },
+                h('span', { className: 'gp-note', style: { flex: 1, fontSize: 10, wordBreak: 'break-all' } }, row.path),
+                h('span', { className: 'gp-note', style: { fontSize: 10 } }, `${(row.bytes / 1024).toFixed(0)} KB`))))
+          : null,
+        (history ?? []).length
+          ? h('div', { className: 'gp-export-section' },
+              h('div', { className: 'gp-export-head' }, h('strong', null, '构建历史')),
+              ...history.slice(-6).reverse().map((item) => {
+                const previous = [...history].filter((h2) => h2.target === item.target && h2.at < item.at).pop()
+                const delta = previous && item.bytes && previous.bytes ? item.bytes - previous.bytes : null
+                return h('div', { key: item.at + item.target, className: 'gp-size-row' },
+                  h('span', { style: { flex: 1, minWidth: 0, fontSize: 10 } },
+                    `${new Date(item.at).toLocaleTimeString()} · ${String(item.target).slice(0, 24)}`),
+                  h('span', { className: 'gp-note', style: { fontSize: 10 } }, item.ms ? `${(item.ms / 1000).toFixed(0)}s` : ''),
+                  h('span', {
+                    className: 'gp-size-pct',
+                    'data-warn': delta && delta > 0 ? '1' : '0',
+                  }, item.bytes ? `${(item.bytes / 1024 / 1024).toFixed(2)}MB${delta ? (delta > 0 ? ` +${(delta / 1024).toFixed(0)}KB` : ` ${(delta / 1024).toFixed(0)}KB`) : ''}` : ''))
+              }))
+          : null,
+        h('div', { className: 'gp-export-section' },
+          h('div', { className: 'gp-export-head' },
+            h('strong', null, '手机预览'),
+            h('span', { className: 'gp-note', style: { flex: 1, fontSize: 10 } }, share?.url ?? '把当前静态预览通过局域网分享给手机')),
+          share?.qr
+            ? h('img', { src: share.qr, alt: '手机扫码预览', style: { width: 148, height: 148, imageRendering: 'pixelated', alignSelf: 'center' } })
+            : null,
+          share?.url
+            ? h('div', { className: 'gp-size-row' },
+                h('span', { style: { flex: 1, minWidth: 0, fontSize: 10, wordBreak: 'break-all' } }, share.url),
+                h('button', { className: 'gp-btn', onClick: () => void stopShare() }, '停止'))
+            : h('div', { className: 'gp-size-row' },
+                h('span', { className: 'gp-note', style: { flex: 1, fontSize: 10 } }, '同一 Wi-Fi 下扫码即开，30 分钟后自动失效'),
+                h('button', { className: 'gp-btn', disabled: busy, onClick: () => void startShare() }, '生成二维码'))),
         (state?.tasks ?? []).length
           ? h('div', { className: 'gp-export-section' },
               h('div', { className: 'gp-export-head' }, h('strong', null, '工程脚本'), h('span', { className: 'gp-note', style: { fontSize: 10 } }, 'package.json · android/ · tools/')),
@@ -650,8 +753,11 @@ window.__ModuleLoader__.load({
           ? h('div', { className: 'gp-export-section' },
               h('div', { className: 'gp-export-head' }, h('strong', null, '包体积')),
               ...state.sizes.map((row) => h('div', { key: row.path, className: 'gp-size-row' },
-                h('span', { style: { flex: 1, minWidth: 0, fontSize: 11, wordBreak: 'break-all' } },
-                  `${row.kind} · ${(row.bytes / 1024 / 1024).toFixed(2)} MB`),
+                h('button', {
+                  className: 'gp-size-name',
+                  title: '看体积构成',
+                  onClick: () => void openBreakdown(row.path),
+                }, `${row.kind} · ${(row.bytes / 1024 / 1024).toFixed(2)} MB`),
                 h('span', {
                   className: 'gp-size-pct',
                   'data-warn': row.percent && row.percent >= 80 ? '1' : '0',

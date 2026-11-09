@@ -6,9 +6,11 @@
  * only node: builtins and the Cordis context.
  */
 import { createServer } from 'node:http'
-import { spawn, execFile } from 'node:child_process'
+import { randomBytes } from 'node:crypto'
+import { spawn, execFile, spawnSync } from 'node:child_process'
 import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
+import { networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
 import { WindowCapture } from './host/window.js'
 
@@ -553,6 +555,104 @@ function sizeReport(root) {
   return out
 }
 
+
+/* ------------------------------------------------------------ sharing */
+
+function lanAddress() {
+  const nets = networkInterfaces()
+  for (const list of Object.values(nets)) {
+    for (const net of list ?? []) {
+      if (net.family === 'IPv4' && !net.internal) return net.address
+    }
+  }
+  return null
+}
+
+function findPython() {
+  const candidates = [
+    process.env.DSH_PYTHON,
+    join(process.env.USERPROFILE ?? '', '.dsh', 'dsh-runtimes', 'dsh-primary-runtime', 'dependencies', 'python', 'python.exe'),
+    'python.exe',
+    'python',
+  ].filter(Boolean)
+  for (const candidate of candidates) {
+    try {
+      const result = spawnSync(candidate, ['-c', 'import qrcode, PIL; print("ok")'], { timeout: 8000, encoding: 'utf8' })
+      if (result.status === 0 && String(result.stdout).includes('ok')) return candidate
+    } catch {}
+  }
+  return null
+}
+
+const QR_SCRIPT = [
+  'import sys, io, base64',
+  'import qrcode',
+  'img = qrcode.make(sys.argv[1], box_size=8, border=2)',
+  'buf = io.BytesIO()',
+  "img.save(buf, format='PNG')",
+  "sys.stdout.write(base64.b64encode(buf.getvalue()).decode())",
+].join('\n')
+
+/** QR PNG as a data URL, or null when no python with the qrcode package exists. */
+function qrDataUrl(text) {
+  const python = findPython()
+  if (!python) return null
+  try {
+    const result = spawnSync(python, ['-c', QR_SCRIPT, text], { timeout: 15000, encoding: 'utf8' })
+    const base64 = String(result.stdout ?? '').trim()
+    if (result.status !== 0 || !base64) return null
+    return `data:image/png;base64,${base64}`
+  } catch {
+    return null
+  }
+}
+
+/* ------------------------------------------------------- size breakdown */
+
+function sizeBreakdown(dir) {
+  const byDir = new Map()
+  const byExt = new Map()
+  const files = []
+  let total = 0
+  const walk = (current, rel) => {
+    let entries = []
+    try {
+      entries = readdirSync(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(current, entry.name)
+      const nextRel = rel ? `${rel}/${entry.name}` : entry.name
+      if (entry.isDirectory()) {
+        walk(full, nextRel)
+        continue
+      }
+      let size = 0
+      try {
+        size = statSync(full).size
+      } catch {
+        continue
+      }
+      total += size
+      const top = nextRel.split('/')[0]
+      byDir.set(top, (byDir.get(top) ?? 0) + size)
+      const dot = entry.name.lastIndexOf('.')
+      const ext = dot > 0 ? entry.name.slice(dot).toLowerCase() : '(无扩展名)'
+      byExt.set(ext, (byExt.get(ext) ?? 0) + size)
+      files.push({ path: nextRel, bytes: size })
+    }
+  }
+  walk(dir, '')
+  const pct = (n) => (total ? Math.round((n / total) * 1000) / 10 : 0)
+  return {
+    total,
+    dirs: [...byDir.entries()].map(([name, bytes]) => ({ name, bytes, percent: pct(bytes) })).sort((a, b) => b.bytes - a.bytes).slice(0, 12),
+    exts: [...byExt.entries()].map(([name, bytes]) => ({ name, bytes, percent: pct(bytes) })).sort((a, b) => b.bytes - a.bytes).slice(0, 10),
+    files: files.sort((a, b) => b.bytes - a.bytes).slice(0, 12),
+  }
+}
+
 /* ------------------------------------------------------------- html bundle */
 
 const BUNDLE_MAX_BYTES = 12 * 1024 * 1024
@@ -856,6 +956,8 @@ export function apply(ctx, config = {}) {
   const proc = { child: null, config: null, startedAt: 0, logTail: [], exe: null }
   const state = { active: null, lastRoot: null, lastError: null }
   const exportJob = { running: false, target: null, startedAt: 0, log: [], result: null, error: null }
+  const share = { server: null, port: null, token: null, root: null, expiresAt: 0, entry: 'index.html' }
+  const history = { loaded: false, items: [] }
   const capture = new WindowCapture({
     helperPath: join(HERE, 'host', 'window-capture.ps1'),
     logger: log,
@@ -1305,6 +1407,7 @@ export function apply(ctx, config = {}) {
           await runProcess(node, [task.cmd, ...(task.args ?? [])], cwd, task.label, 30 * 60 * 1000, runEnv)
         }
         exportJob.result = { kind: 'task', file: null, size: null }
+        recordHistory({ at: Date.now(), target: task.label, kind: 'task', ms: Date.now() - exportJob.startedAt, bytes: null, file: null })
         exportPush(`完成：${task.label}`)
       } catch (error) {
         exportJob.error = String(error?.message ?? error)
@@ -1347,6 +1450,7 @@ export function apply(ctx, config = {}) {
           await zipDirectory(dir, out)
           const size = statSync(out).size
           exportJob.result = { kind: 'web', file: out, size }
+        recordHistory({ at: Date.now(), target: 'web', kind: 'export', ms: Date.now() - exportJob.startedAt, bytes: size, file: out })
           exportPush(`完成：${out}（${Math.round(size / 1024)} KB）`)
           return
         }
@@ -1393,6 +1497,7 @@ export function apply(ctx, config = {}) {
           const out = join(dist, `apk-${stamp}.apk`)
           copyFileSync(apk.file, out)
           exportJob.result = { kind: 'apk', file: out, size: statSync(out).size }
+          recordHistory({ at: Date.now(), target: 'apk', kind: 'export', ms: Date.now() - exportJob.startedAt, bytes: statSync(out).size, file: out })
           exportPush(`完成：${out}（${Math.round(statSync(out).size / 1024)} KB）`)
           return
         }
@@ -1408,6 +1513,7 @@ export function apply(ctx, config = {}) {
             const out = join(dist, `exe-${stamp}.exe`)
             copyFileSync(artifact.file, out)
             exportJob.result = { kind: 'exe', file: out, size: statSync(out).size }
+            recordHistory({ at: Date.now(), target: 'exe', kind: 'export', ms: Date.now() - exportJob.startedAt, bytes: statSync(out).size, file: out })
             exportPush(`完成：${out}`)
             return
           }
@@ -1429,6 +1535,142 @@ export function apply(ctx, config = {}) {
     })()
 
     return exportStatus()
+  }
+
+  function historyFile() {
+    return state.lastRoot ? join(state.lastRoot, '.dsh-game-preview', 'history.json') : null
+  }
+
+  function loadHistory() {
+    if (history.loaded) return history.items
+    history.loaded = true
+    const file = historyFile()
+    if (!file) return history.items
+    try {
+      history.items = JSON.parse(readFileSync(file, 'utf8')).slice(-40)
+    } catch {
+      history.items = []
+    }
+    return history.items
+  }
+
+  function recordHistory(entry) {
+    const file = historyFile()
+    if (!file) return
+    const items = loadHistory()
+    items.push(entry)
+    history.items = items.slice(-40)
+    try {
+      mkdirSync(dirname(file), { recursive: true })
+      writeFileSync(file, JSON.stringify(history.items, null, 1))
+    } catch {}
+  }
+
+  function stopShare() {
+    if (share.server) {
+      try {
+        share.server.close()
+      } catch {}
+    }
+    share.server = null
+    share.port = null
+    share.token = null
+    share.root = null
+    share.expiresAt = 0
+  }
+
+  /**
+   * Share the static preview over the LAN so a phone can open it. The listener
+   * only serves one registered directory behind a random token and expires.
+   */
+  async function startShare(minutes = 30) {
+    const root = state.lastRoot
+    if (!root) throw new Error('还没有工作区')
+    const entry = state.active
+    const rel = entry?.kind === 'file' || entry?.kind === 'window' ? null : null
+    const cfg = entry?.bundlePath ? entry : null
+    void rel
+    void cfg
+
+    const staticRoot = entry?.staticRoot ?? root
+    if (!existsSync(staticRoot)) throw new Error('没有可以分享的静态目录')
+    if (!staticRoots.has(staticRoot)) throw new Error('这个目录还没有登记为预览根目录：先运行一次静态预览')
+
+    stopShare()
+    const token = randomBytes(12).toString('hex')
+    const port = await new Promise((resolvePort, rejectPort) => {
+      const server = createServer((req, res) => {
+        if (Date.now() > share.expiresAt) {
+          res.writeHead(410)
+          res.end('share expired')
+          return
+        }
+        const url = new URL(req.url ?? '/', 'http://lan')
+        const prefix = `/m/${token}/`
+        if (!url.pathname.startsWith(prefix)) {
+          res.writeHead(404)
+          res.end('not found')
+          return
+        }
+        let relPath = ''
+        try {
+          relPath = decodeURIComponent(url.pathname.slice(prefix.length)) || 'index.html'
+        } catch {
+          res.writeHead(400)
+          res.end('bad path')
+          return
+        }
+        const target = resolve(share.root, relPath)
+        if (target !== share.root && !target.startsWith(share.root + sep)) {
+          res.writeHead(403)
+          res.end('containment')
+          return
+        }
+        try {
+          const data = readFileSync(target)
+          res.writeHead(200, { 'content-type': mimeOf(target), 'cache-control': 'no-store' })
+          res.end(data)
+        } catch {
+          res.writeHead(404)
+          res.end('not found')
+        }
+      })
+      server.on('error', rejectPort)
+      server.listen(0, '0.0.0.0', () => {
+        share.server = server
+        resolvePort(server.address().port)
+      })
+    })
+
+    share.root = staticRoot
+    share.token = token
+    share.port = port
+    share.expiresAt = Date.now() + Math.max(1, minutes) * 60 * 1000
+
+    const ip = lanAddress()
+    const url = ip ? `http://${ip}:${port}/m/${token}/` : null
+    return {
+      ok: true,
+      url,
+      lan: Boolean(ip),
+      port,
+      expiresAt: share.expiresAt,
+      qr: url ? qrDataUrl(url) : null,
+      note: ip ? null : '没有找到局域网 IP（这台机器可能只有回环网络）',
+    }
+  }
+
+  function shareStatus() {
+    const alive = Boolean(share.server) && Date.now() < share.expiresAt
+    const ip = lanAddress()
+    return {
+      ok: true,
+      active: alive,
+      url: alive && ip ? `http://${ip}:${share.port}/m/${share.token}/` : null,
+      port: alive ? share.port : null,
+      expiresAt: alive ? share.expiresAt : null,
+      lan: Boolean(ip),
+    }
   }
 
   function rootsPayload() {
@@ -1850,6 +2092,44 @@ export function apply(ctx, config = {}) {
       return
     }
 
+    if (path === '/api/share' && req.method === 'GET') {
+      send(res, headers, shareStatus())
+      return
+    }
+
+    if (path === '/api/share' && req.method === 'POST') {
+      const body = await readBody(req)
+      try {
+        send(res, headers, await startShare(Number(body?.minutes) || 30))
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 400)
+      }
+      return
+    }
+
+    if (path === '/api/share/stop' && req.method === 'POST') {
+      stopShare()
+      send(res, headers, { ok: true })
+      return
+    }
+
+    if (path === '/api/size' && req.method === 'GET') {
+      const rel = url.searchParams.get('path') ?? ''
+      const root = state.lastRoot
+      const dir = root ? resolve(root, rel) : null
+      if (!dir || !existsSync(dir)) {
+        send(res, headers, { ok: false, error: '目录不存在' }, 404)
+        return
+      }
+      send(res, headers, { ok: true, path: rel, ...sizeBreakdown(dir) })
+      return
+    }
+
+    if (path === '/api/history' && req.method === 'GET') {
+      send(res, headers, { ok: true, items: loadHistory() })
+      return
+    }
+
     if (path === '/api/tasks' && req.method === 'GET') {
       send(res, headers, { ok: true, tasks: state.lastRoot ? listTasks(state.lastRoot, config) : [], sizes: state.lastRoot ? sizeReport(state.lastRoot) : [] })
       return
@@ -2107,6 +2387,7 @@ export function apply(ctx, config = {}) {
       const bundleSafe = !moduleEntry && !engineBuild
       state.active = {
         id: cfg.id, title: cfg.title, kind: 'file',
+        staticRoot: serveRoot,
         url: `${originOf()}/static/${staticToken(serveRoot)}/${entryPath.split('/').map(encodeURIComponent).join('/')}`,
         // same-origin bundle: the panel can play this from a blob URL even when
         // the desktop page cannot reach the loopback server at all. ES modules
@@ -2521,6 +2802,36 @@ export function apply(ctx, config = {}) {
         return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
       }
     }, 'buffered')
+
+    add(`${API_PREFIX}/share`, ['GET'], () => jsonResponse(shareStatus()))
+
+    add(`${API_PREFIX}/share`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      try {
+        return jsonResponse(await startShare(Number(body?.minutes) || 30))
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 400)
+      }
+    }, 'buffered')
+
+    add(`${API_PREFIX}/share/stop`, ['POST'], () => {
+      stopShare()
+      return jsonResponse({ ok: true })
+    })
+
+    add(`${API_PREFIX}/size`, ['GET'], (request) => {
+      const params = new URL(String(request?.url ?? ''), originOf()).searchParams
+      const rel = params.get('path') ?? ''
+      const root = state.lastRoot
+      const dir = root ? resolve(root, rel) : null
+      if (!dir || !existsSync(dir)) return jsonResponse({ ok: false, error: '目录不存在' }, 404)
+      return jsonResponse({ ok: true, path: rel, ...sizeBreakdown(dir) })
+    })
+
+    add(`${API_PREFIX}/history`, ['GET'], () => jsonResponse({ ok: true, items: loadHistory() }))
 
     add(`${API_PREFIX}/tasks`, ['GET'], () =>
       jsonResponse({
