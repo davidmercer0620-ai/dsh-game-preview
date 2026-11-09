@@ -1,0 +1,43 @@
+{
+  "format": 1,
+  "title": {
+    "en": "DSH Game Preview",
+    "zh": "DSH 游戏预览"
+  },
+  "description": {
+    "en": "A game studio plugin for DeepSeek Harness: play the game inside the sidebar, then package it.",
+    "zh": "DeepSeek Harness 的游戏工作室插件：在侧栏里玩自己的游戏，顺手打包发布。"
+  },
+  "plugins": [
+    {
+      "name": "@davidmercer0620-ai/dsh-game-preview",
+      "title": {
+        "en": "Game Preview",
+        "zh": "游戏预览"
+      },
+      "description": {
+        "en": "Run a Cocos, Godot, Unity or WeChat project and play it inside the right sidebar — window capture, input forwarding, PC/phone viewports, Web/APK packaging, bundle budgets and a QR code for device testing.",
+        "zh": "跑起 Cocos / Godot / Unity / 微信小游戏，在右侧栏里直接玩——窗口捕获、键鼠转发、PC/手机视口、Web/APK 封包、包体积预算，还能生成二维码手机试玩。"
+      },
+      "author": "邮差游戏工作室 / Postman Game Studio",
+      "homepage": "https://github.com/davidmercer0620-ai/dsh-game-preview#readme",
+      "repository": {
+        "url": "https://github.com/davidmercer0620-ai/dsh-game-preview"
+      },
+      "versions": [
+        {
+          "version": "0.7.1",
+          "publishTimestamp": 1794230135,
+          "source": {
+            "type": "git",
+            "url": "https://github.com/davidmercer0620-ai/dsh-game-preview.git",
+            "commit": "959cb6e63741007927e1c9c9621aa06b9318d721"
+          },
+          "engines": {
+            "dsh": "*"
+          }
+        }
+      ]
+    }
+  ]
+}

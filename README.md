@@ -1,16 +1,34 @@
 # DSH Game Preview
 
-**A game studio plugin for DeepSeek Harness.** Run your game, capture native engine windows, and play it inside the sidebar — no window switching, no alt-tab.
+[![version](https://img.shields.io/badge/version-0.7.1-2ea44f)](CHANGELOG.md)
+[![license](https://img.shields.io/badge/license-MIT-blue)](LICENSE)
+[![platform](https://img.shields.io/badge/platform-Windows%2010%2F11-0078d4)](#requirements)
+[![deepseek](https://img.shields.io/badge/for-DeepSeek%20Harness-4d6bfe)](https://deepseek.com)
+[![no dependencies](https://img.shields.io/badge/runtime%20dependencies-0-brightgreen)](#requirements)
 
-Made by **邮差游戏工作室 / Postman Game Studio** for teams that build games *with* DSH: the agent edits code, the panel shows the game, you keep your eyes in one window.
+**Play your game inside the sidebar while the agent codes it.**
+
+Run a Cocos / Godot / Unity / WeChat project, capture the native engine window, forward your mouse and keyboard, and iterate without ever leaving DeepSeek Harness. Then package it — Web zip, Android APK, or a project script like `build:taptap` — from the same panel.
+
+Made by **邮差游戏工作室 / Postman Game Studio**.
 
 **English** · [简体中文](README.zh.md) · [繁體中文](README.zh-TW.md) · [日本語](README.ja.md) · [한국어](README.ko.md) · [Deutsch](README.de.md) · [Español](README.es.md) · [Français](README.fr.md)
 
-![Native Unity capture inside the sidebar](docs/images/unity-native-capture.jpg)
+<p align="center">
+  <img src="docs/images/panel-phone.png" alt="The game preview tab in the right sidebar, showing a 390x844 phone frame" width="420">
+</p>
 
-*The Unity editor captured live into the right sidebar — 1920×1030 at 15 fps, cropped to the Game view, keyboard and mouse forwarded.*
+<p align="center"><em>Phone viewport (390×844) running the exported Cocos build, with the run bar, packaging and console below.</em></p>
+
+<p align="center">
+  <img src="docs/images/unity-native-capture.jpg" alt="A native Unity window captured into the sidebar" width="720">
+</p>
+
+<p align="center"><em>The Unity editor captured live into the sidebar — 1920×1030 at 15 fps, cropped to the Game view, keyboard and mouse forwarded.</em></p>
 
 ## Why this exists
+
+
 
 Every engine has one loop that is faster than all the others. The panel picks that loop automatically:
 
@@ -45,6 +63,20 @@ Every engine has one loop that is faster than all the others. The panel picks th
 | **Hotkeys** | `F` full-bleed · `R` reload · `Esc` leave |
 
 ## Install
+
+### From the Discover tab (plugin market)
+
+1. Enable the experimental market bundle once:
+   `plugin_manager install_bundle(target: "@deepseek-ai/dsh-experimental-plugin-market-bundle")`
+2. In **Settings → Plugins → Discover**, add this index URL:
+
+```
+https://raw.githubusercontent.com/davidmercer0620-ai/dsh-game-preview/main/docs/plugin-index.json
+```
+
+The index pins an exact commit per version, so an install from it is reproducible.
+
+### From a local checkout
 
 Requires DeepSeek Harness `0.2.x` and Node.js 22+.
 
