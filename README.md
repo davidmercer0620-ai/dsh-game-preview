@@ -26,6 +26,24 @@ Made by **邮差游戏工作室 / Postman Game Studio**.
 
 <p align="center"><em>The Unity editor captured live into the sidebar — 1920×1030 at 15 fps, cropped to the Game view, keyboard and mouse forwarded.</em></p>
 
+## Not a screen mirror
+
+A senior developer reviewed an early build and said it plainly:
+
+> *"The preview is just a screen recording in the sidebar — useless with two monitors. The agent drives Unity through scripts in the background, the editor does nothing until the final test, then it flashes and the scene is finished."*
+
+That is right, and it changed the design. Watching a live feed of an idle editor is pointless. What you actually want is **the moment the agent was done**:
+
+- **⏺ Result timeline** keeps a still only when the picture really changes (hash-gated, at most one every 4 s), so ten minutes of agent work becomes a handful of frames — a few hundred KB, near-zero CPU.
+- **One click makes a GIF** of those frames, straight into your project folder, ready to paste into a review or a PR.
+- No continuous rendering, no second monitor required: open the panel when you want to *check the result*, not to babysit it.
+
+<p align="center">
+  <img src="docs/images/timelapse.gif" alt="An eight-frame timelapse of a finished Cocos build, recorded by the result timeline" width="320">
+</p>
+
+<p align="center"><em>Eight stills out of a 45-second recording of a finished build — what the agent produced, not a live feed.</em></p>
+
 ## Why this exists
 
 

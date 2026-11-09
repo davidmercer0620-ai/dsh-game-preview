@@ -340,6 +340,22 @@ try {
   console.log('window closed ->', closed?.errorCode ?? 'not detected', '|', closed?.error ?? '')
   if (!closed) throw new Error('closing the window must be reported as window-closed')
 
+  // the timeline only keeps frames that changed, and can become a GIF
+  const t0 = await (await fetch(base + '/api/timeline')).json()
+  console.log('timeline initial:', t0.ok, '| frames:', t0.frames.length, '| enabled:', t0.enabled)
+  if (!t0.ok) throw new Error('timeline endpoint failed')
+  const tOn = await (await fetch(base + '/api/timeline', {
+    method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ enabled: true }),
+  })).json()
+  console.log('timeline enabled:', tOn.enabled)
+  if (!tOn.enabled) throw new Error('timeline did not enable')
+  await sleep(1200)
+  const t1 = await (await fetch(base + '/api/timeline')).json()
+  console.log('timeline frames after enable:', t1.frames.length)
+  const gifMaybe = await (await fetch(base + '/api/timeline/gif', { method: 'POST', headers: JSON_HEADERS, body: '{}' })).json()
+  console.log('gif with few frames:', gifMaybe.ok, '|', String(gifMaybe.error ?? gifMaybe.file ?? '').slice(0, 70))
+  if (t1.frames.length < 2 && gifMaybe.ok) throw new Error('gif must refuse with fewer than two frames')
+
   // the agent can read the logs and grab the current frame
   const logsTool = tools.get('game_preview_logs')
   const shotTool = tools.get('game_preview_screenshot')

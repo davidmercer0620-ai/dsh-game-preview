@@ -6,9 +6,9 @@
  * only node: builtins and the Cordis context.
  */
 import { createServer } from 'node:http'
-import { randomBytes } from 'node:crypto'
+import { createHash, randomBytes } from 'node:crypto'
 import { spawn, execFile, spawnSync } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, unlinkSync, watch, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { networkInterfaces } from 'node:os'
 import { fileURLToPath } from 'node:url'
@@ -983,11 +983,16 @@ export function apply(ctx, config = {}) {
   const state = { active: null, lastRoot: null, lastError: null }
   const exportJob = { running: false, target: null, startedAt: 0, log: [], result: null, error: null }
   const share = { server: null, port: null, token: null, root: null, expiresAt: 0, entry: 'index.html' }
+  // Frames are only kept when the picture actually changes: an agent that works
+  // for ten minutes in the editor produces a handful of meaningful stills, not
+  // a video stream. That is the point — review the result, not the process.
+  const timeline = { enabled: false, frames: [], lastHash: null, lastAt: 0, seq: 0, root: null }
   const history = { loaded: false, items: [] }
   const capture = new WindowCapture({
     helperPath: join(HERE, 'host', 'window-capture.ps1'),
     logger: log,
   })
+  capture.onFrame((frame) => timelineRecord(frame))
 
   /* -- which workspace is the panel looking at ------------------------- */
 
@@ -1563,6 +1568,89 @@ export function apply(ctx, config = {}) {
     return exportStatus()
   }
 
+  function timelineDir(root) {
+    return join(root, '.dsh-game-preview', 'timeline')
+  }
+
+  function timelineSave(root) {
+    if (!root) return
+    const dir = timelineDir(root)
+    try {
+      mkdirSync(dir, { recursive: true })
+      writeFileSync(join(dir, 'index.json'), JSON.stringify(timeline.frames.slice(-200).map((f) => ({ at: f.at, name: f.name, bytes: f.bytes, width: f.width, height: f.height })), null, 1))
+    } catch {}
+  }
+
+  function timelineLoad(root) {
+    timeline.root = root
+    timeline.frames = []
+    try {
+      const items = JSON.parse(readFileSync(join(timelineDir(root), 'index.json'), 'utf8'))
+      timeline.frames = items.map((item) => ({ ...item, file: join(timelineDir(root), item.name) }))
+      timeline.seq = timeline.frames.length
+    } catch {}
+    return timeline.frames
+  }
+
+  function timelineRecord(frame) {
+    if (!timeline.enabled || !frame?.jpeg?.length) return
+    const root = state.lastRoot
+    if (!root) return
+    const now = Date.now()
+    const minGap = Number(config.timelineMinMs) || 4000
+    if (now - timeline.lastAt < minGap) return
+    const hash = createHash('sha1').update(frame.jpeg).digest('hex')
+    if (hash === timeline.lastHash) return
+    timeline.lastHash = hash
+    timeline.lastAt = now
+    try {
+      const dir = timelineDir(root)
+      mkdirSync(dir, { recursive: true })
+      const name = `f${String(timeline.seq++).padStart(4, '0')}-${now}.jpg`
+      writeFileSync(join(dir, name), frame.jpeg)
+      timeline.frames.push({ at: now, name, file: join(dir, name), bytes: frame.jpeg.length, width: frame.width, height: frame.height })
+      if (timeline.frames.length > 200) {
+        const dropped = timeline.frames.shift()
+        try {
+          unlinkSync(dropped.file)
+        } catch {}
+      }
+      timelineSave(root)
+    } catch {}
+  }
+
+  /** Assemble the kept frames into a GIF with the bundled python when present. */
+  function timelineGif(root) {
+    const frames = timeline.frames.filter((f) => existsSync(f.file))
+    if (frames.length < 2) throw new Error('至少需要 2 张变化过的画面才能生成 GIF')
+    const out = join(timelineDir(root), 'timelapse.gif')
+    const python = findPython()
+    const script = `
+import sys, glob
+from PIL import Image
+files = sys.argv[1:-1]
+out = sys.argv[-1]
+imgs = []
+for f in files:
+    im = Image.open(f).convert('RGB')
+    if im.width > 480:
+        im = im.resize((480, round(im.height * 480 / im.width)), Image.LANCZOS)
+    imgs.append(im)
+w = max(i.width for i in imgs); h = max(i.height for i in imgs)
+canvases = []
+for im in imgs:
+    c = Image.new('RGB', (w, h), (10, 14, 26)); c.paste(im, (0, 0)); canvases.append(c)
+pal = [c.convert('P', palette=Image.ADAPTIVE, colors=128) for c in canvases]
+pal[0].save(out, save_all=True, append_images=pal[1:], duration=700, loop=0, optimize=True, disposal=2)
+print('ok')
+`
+    const result = spawnSync(python ?? 'python', ['-c', script, ...frames.map((f) => f.file), out], { encoding: 'utf8', timeout: 120000 })
+    if (result.status !== 0 || !existsSync(out)) {
+      throw new Error(`GIF 生成失败：${String(result.stderr ?? '').slice(0, 200) || '需要 Pillow（pip install pillow）'}`)
+    }
+    return { file: out, bytes: statSync(out).size, frames: frames.length }
+  }
+
   function historyFile() {
     return state.lastRoot ? join(state.lastRoot, '.dsh-game-preview', 'history.json') : null
   }
@@ -2116,6 +2204,56 @@ export function apply(ctx, config = {}) {
         send(res, headers, { ok: true })
       } catch (error) {
         send(res, headers, { ok: false, error: String(error?.message ?? error) }, 500)
+      }
+      return
+    }
+
+    if (path === '/api/timeline' && req.method === 'GET') {
+      const root = state.lastRoot
+      if (root && timeline.root !== root) timelineLoad(root)
+      send(res, headers, {
+        ok: true,
+        enabled: timeline.enabled,
+        minGapMs: Number(config.timelineMinMs) || 4000,
+        dir: root ? timelineDir(root) : null,
+        frames: timeline.frames.map((f) => ({ at: f.at, name: f.name, bytes: f.bytes, width: f.width, height: f.height })),
+      })
+      return
+    }
+
+    if (path === '/api/timeline' && req.method === 'POST') {
+      const body = await readBody(req)
+      if (typeof body?.enabled === 'boolean') {
+        timeline.enabled = body.enabled
+        if (body.enabled) timeline.lastHash = null
+        if (body.enabled && state.lastRoot) timelineLoad(state.lastRoot)
+      }
+      if (body?.clear) {
+        const root = state.lastRoot
+        if (root) {
+          for (const frame of timeline.frames) {
+            try {
+              unlinkSync(frame.file)
+            } catch {}
+          }
+          timeline.frames = []
+          timeline.seq = 0
+          timelineSave(root)
+        }
+      }
+      send(res, headers, { ok: true, enabled: timeline.enabled, frames: timeline.frames.length })
+      return
+    }
+
+    if (path === '/api/timeline/gif' && req.method === 'POST') {
+      const root = state.lastRoot
+      try {
+        if (!root) throw new Error('还没有工作区')
+        if (timeline.root !== root) timelineLoad(root)
+        const gif = timelineGif(root)
+        send(res, headers, { ok: true, ...gif })
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 400)
       }
       return
     }
@@ -2830,6 +2968,55 @@ export function apply(ctx, config = {}) {
         return jsonResponse({ ok: true })
       } catch (error) {
         return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+      }
+    }, 'buffered')
+
+    add(`${API_PREFIX}/timeline`, ['GET'], () => {
+      const root = state.lastRoot
+      if (root && timeline.root !== root) timelineLoad(root)
+      return jsonResponse({
+        ok: true,
+        enabled: timeline.enabled,
+        minGapMs: Number(config.timelineMinMs) || 4000,
+        dir: root ? timelineDir(root) : null,
+        frames: timeline.frames.map((f) => ({ at: f.at, name: f.name, bytes: f.bytes, width: f.width, height: f.height })),
+      })
+    })
+
+    add(`${API_PREFIX}/timeline`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      if (typeof body?.enabled === 'boolean') {
+        timeline.enabled = body.enabled
+        if (body.enabled) timeline.lastHash = null
+        if (body.enabled && state.lastRoot) timelineLoad(state.lastRoot)
+      }
+      if (body?.clear) {
+        const root = state.lastRoot
+        if (root) {
+          for (const frame of timeline.frames) {
+            try {
+              unlinkSync(frame.file)
+            } catch {}
+          }
+          timeline.frames = []
+          timeline.seq = 0
+          timelineSave(root)
+        }
+      }
+      return jsonResponse({ ok: true, enabled: timeline.enabled, frames: timeline.frames.length })
+    }, 'buffered')
+
+    add(`${API_PREFIX}/timeline/gif`, ['POST'], () => {
+      const root = state.lastRoot
+      try {
+        if (!root) throw new Error('还没有工作区')
+        if (timeline.root !== root) timelineLoad(root)
+        return jsonResponse({ ok: true, ...timelineGif(root) })
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 400)
       }
     }, 'buffered')
 

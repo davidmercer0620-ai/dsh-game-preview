@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.7.1'
+    const CLIENT_BUILD = '0.8.0'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -405,6 +405,8 @@ window.__ModuleLoader__.load({
       .gp-bar-fill{display:block;height:100%;background:color-mix(in srgb, currentColor 55%, transparent)}
       .gp-bar-val{width:58px;text-align:right;opacity:.7}
       .gp-size-pct[data-warn="1"]{color:#d98c2f;opacity:1}
+      .gp-shots{display:flex;gap:4px;flex-wrap:wrap}
+      .gp-shot{font-size:10px;padding:2px 6px;border-radius:5px;background:color-mix(in srgb, currentColor 10%, transparent);opacity:.75}
       .gp-export-result{display:flex;align-items:center;gap:8px;font-size:11px}
       .gp-crop{position:absolute;inset:0;overflow:hidden;background:#000}
       .gp-crop-inner{position:absolute;transform-origin:top left}
@@ -718,6 +720,56 @@ window.__ModuleLoader__.load({
                   }, item.bytes ? `${(item.bytes / 1024 / 1024).toFixed(2)}MB${delta ? (delta > 0 ? ` +${(delta / 1024).toFixed(0)}KB` : ` ${(delta / 1024).toFixed(0)}KB`) : ''}` : ''))
               }))
           : null,
+        h('div', { className: 'gp-export-section' },
+          h('div', { className: 'gp-export-head' },
+            h('strong', null, '结果时间线'),
+            h('span', { className: 'gp-note', style: { flex: 1, fontSize: 10 } },
+              `${timeline?.frames?.length ?? 0} 帧 · 只在画面变化时记录`),
+            h('button', {
+              className: 'gp-btn',
+              'data-primary': timeline?.enabled ? '1' : '0',
+              onClick: async () => {
+                try {
+                  const next = await call('/api/timeline', {
+                    method: 'POST',
+                    body: JSON.stringify({ enabled: !timeline?.enabled }),
+                  })
+                  setTimeline({ ...(timeline ?? {}), enabled: next.enabled, frames: timeline?.frames ?? [] })
+                } catch (err) {
+                  setError(String(err?.message ?? err))
+                }
+              },
+            }, timeline?.enabled ? '⏺ 记录中' : '⏺ 开始记录'),
+            (timeline?.frames?.length ?? 0) > 1
+              ? h('button', {
+                  className: 'gp-btn',
+                  disabled: gifBusy,
+                  onClick: async () => {
+                    setGifBusy(true)
+                    try {
+                      const result = await call('/api/timeline/gif', { method: 'POST', body: '{}' })
+                      if (result.ok) setGifResult(result)
+                      else setError(result.error ?? 'GIF 失败')
+                    } catch (err) {
+                      setError(String(err?.message ?? err))
+                    } finally {
+                      setGifBusy(false)
+                    }
+                  },
+                }, gifBusy ? '生成中…' : '生成 GIF')
+              : null),
+          (timeline?.frames ?? []).length
+            ? h('div', { className: 'gp-shots' }, ...timeline.frames.slice(-8).map((frame) =>
+                h('span', { key: frame.name, className: 'gp-shot', title: new Date(frame.at).toLocaleTimeString() },
+                  `${new Date(frame.at).toLocaleTimeString().slice(0, 5)}`)))
+            : h('div', { className: 'gp-note', style: { fontSize: 10 } },
+                '打开记录后，画面一变化就存一帧（最少间隔 4 秒）。干完活回来看这条时间线，比看直播有用。'),
+          gifResult
+            ? h('div', { className: 'gp-export-result' },
+                h('span', { style: { flex: 1, minWidth: 0, fontSize: 10, wordBreak: 'break-all' } },
+                  `GIF · ${(gifResult.bytes / 1024).toFixed(0)} KB · ${gifResult.file}`),
+                h('button', { className: 'gp-btn', onClick: () => void reveal(gifResult.file) }, '打开目录'))
+            : null),
         h('div', { className: 'gp-export-section' },
           h('div', { className: 'gp-export-head' },
             h('strong', null, '手机预览'),
@@ -1192,6 +1244,9 @@ window.__ModuleLoader__.load({
       const [showExport, setShowExport] = useState(false)
       const [showLogs, setShowLogs] = useState(false)
       const [logLines, setLogLines] = useState([])
+      const [timeline, setTimeline] = useState(null)
+      const [gifBusy, setGifBusy] = useState(false)
+      const [gifResult, setGifResult] = useState(null)
       const [quality, setQualityState] = useState(() => {
         try {
           const saved = String(window.localStorage.getItem('dsh-game-preview.quality') ?? '')
@@ -1360,6 +1415,23 @@ window.__ModuleLoader__.load({
           setBusy(false)
         }
       }, [])
+
+      useEffect(() => {
+        if (!showExport) return undefined
+        let alive = true
+        const tick = async () => {
+          try {
+            const next = await call('/api/timeline')
+            if (alive) setTimeline(next)
+          } catch {}
+        }
+        void tick()
+        const timer = setInterval(() => void tick(), 3000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [showExport])
 
       useEffect(() => {
         if (!showLogs) return undefined
