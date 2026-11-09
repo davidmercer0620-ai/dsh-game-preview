@@ -137,6 +137,11 @@ Edit the row in your profile's `cordis.patch.yml`:
 
 ## How it works
 
+<p align="center">
+  <img src="docs/images/architecture.svg" alt="Engine window → native capture → loopback HTTP → iframe bridge → sidebar panel" width="880">
+</p>
+
+
 ```
 DSH Web UI
 ├── session header ▶            ──┐
@@ -178,3 +183,11 @@ Reinstall the plugin after changing the host half; reload the page after changin
 ## License
 
 MIT
+
+## If this saves you alt-tabs
+
+Star the repo — it is the signal that tells me to keep the Windows capture path alive. Issues with a screenshot are even better than stars: the panel can capture its own frame, so a bug report with `game_preview_screenshot` output is reproducible.
+
+- Roadmap and the honest "what we will not build": [docs/ROADMAP.md](docs/ROADMAP.md)
+- Changelog: [CHANGELOG.md](CHANGELOG.md)
+- Built by 邮差游戏工作室 / Postman Game Studio, MIT licensed.
