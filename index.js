@@ -560,12 +560,23 @@ function sizeReport(root) {
 
 function lanAddress() {
   const nets = networkInterfaces()
-  for (const list of Object.values(nets)) {
+  const scored = []
+  for (const [name, list] of Object.entries(nets)) {
     for (const net of list ?? []) {
-      if (net.family === 'IPv4' && !net.internal) return net.address
+      if (net.family !== 'IPv4' || net.internal) continue
+      const address = net.address
+      if (address.startsWith('169.254.')) continue
+      let score = 0
+      if (/^192\.168\./.test(address)) score += 100
+      else if (/^10\./.test(address)) score += 80
+      else if (/^172\.(1[6-9]|2\d|3[01])\./.test(address)) score += 20
+      if (/vEthernet|WSL|VirtualBox|VMware|Hyper-V|Docker|Tailscale|ZeroTier|Loopback|Bluetooth/i.test(name)) score -= 60
+      if (/WLAN|Wi-?Fi|以太网|Ethernet/i.test(name)) score += 30
+      scored.push({ address, score })
     }
   }
-  return null
+  scored.sort((a, b) => b.score - a.score)
+  return scored[0]?.address ?? null
 }
 
 function findPython() {
@@ -1648,7 +1659,9 @@ export function apply(ctx, config = {}) {
     share.expiresAt = Date.now() + Math.max(1, minutes) * 60 * 1000
 
     const ip = lanAddress()
-    const url = ip ? `http://${ip}:${port}/m/${token}/` : null
+    const entryPath = entry?.entryPath ?? 'index.html'
+    share.entry = entryPath
+    const url = ip ? `http://${ip}:${port}/m/${token}/${entryPath.split('/').map(encodeURIComponent).join('/')}` : null
     return {
       ok: true,
       url,
@@ -1666,7 +1679,7 @@ export function apply(ctx, config = {}) {
     return {
       ok: true,
       active: alive,
-      url: alive && ip ? `http://${ip}:${share.port}/m/${share.token}/` : null,
+      url: alive && ip ? `http://${ip}:${share.port}/m/${share.token}/${(share.entry ?? 'index.html').split('/').map(encodeURIComponent).join('/')}` : null,
       port: alive ? share.port : null,
       expiresAt: alive ? share.expiresAt : null,
       lan: Boolean(ip),
@@ -2388,6 +2401,7 @@ export function apply(ctx, config = {}) {
       state.active = {
         id: cfg.id, title: cfg.title, kind: 'file',
         staticRoot: serveRoot,
+        entryPath,
         url: `${originOf()}/static/${staticToken(serveRoot)}/${entryPath.split('/').map(encodeURIComponent).join('/')}`,
         // same-origin bundle: the panel can play this from a blob URL even when
         // the desktop page cannot reach the loopback server at all. ES modules
@@ -2468,6 +2482,7 @@ export function apply(ctx, config = {}) {
 
   cleanup.push(() => killChild())
   cleanup.push(() => capture.dispose())
+  cleanup.push(() => stopShare())
   cleanup.push(() => {
     for (const entry of roots.values()) {
       try { entry.watcher?.close() } catch {}
