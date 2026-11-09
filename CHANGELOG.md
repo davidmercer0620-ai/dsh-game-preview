@@ -1,5 +1,13 @@
 # Changelog
 
+## 0.6.0 — 2026-11-09
+
+面向游戏开发者的三件事：
+
+- **工程脚本一键执行**：自动列出 `package.json` 里 build/release/verify/bench 类脚本、`android/build.sh`、`build_apk.js`、`tools/build-platform.mjs`，在面板里点一下就跑，输出实时流入日志区
+- **包体积预算**：统计 `release/builds/*`、`build/*`、`cocos/build/*` 的体积，对照微信/抖音/TapTap 4 MB 与 web 32 MB 上限，超 80% 标黄
+- **Agent 能看画面**：新增 `game_preview_screenshot`（把当前帧存进工程并返回路径，agent 用 read_image 自查）与 `game_preview_logs`（进程输出尾部）
+
 ## 0.5.5 — 2026-11-09
 
 封包导出：

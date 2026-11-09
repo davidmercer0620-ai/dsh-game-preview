@@ -5,7 +5,7 @@
  */
 import { apply } from '../index.js'
 import { execFile, spawn } from 'node:child_process'
-import { mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, readdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
 
@@ -171,6 +171,38 @@ const blocked = await fetch(base + '/static/' + forged + '/win.ini')
 console.log('unregistered root', blocked.status)
 if (blocked.status !== 403) throw new Error('static route must refuse unregistered roots')
 
+/* ------------------------------------------------ project tasks + sizes */
+
+console.log('\n--- project tasks ---')
+
+const taskList = await (await fetch(base + '/api/tasks')).json()
+console.log('tasks:', (taskList.tasks ?? []).map((t) => `${t.group}:${t.label}`).join(', '))
+if (!Array.isArray(taskList.tasks)) throw new Error('tasks endpoint returned no array')
+if (!(taskList.tasks ?? []).length) throw new Error('the project has scripts but no tasks were listed')
+const npmTask = (taskList.tasks ?? []).find((t) => t.kind === 'npm')
+if (!npmTask) throw new Error('package.json scripts must become tasks')
+
+const taskRun = await (await fetch(base + '/api/tasks/run', {
+  method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ id: npmTask.id }),
+})).json()
+console.log('task run started:', taskRun.running, '| target:', taskRun.target)
+if (!taskRun.running) throw new Error('task run did not start')
+
+let taskDone = null
+for (let i = 0; i < 40 && !taskDone; i += 1) {
+  await new Promise((r) => setTimeout(r, 500))
+  const status = await (await fetch(base + '/api/export')).json()
+  if (!status.running) taskDone = status
+}
+console.log('task finished:', taskDone?.target, '| error:', String(taskDone?.error ?? '-').slice(0, 80))
+if (!taskDone) throw new Error('task never finished')
+
+const unknown = await fetch(base + '/api/tasks/run', {
+  method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ id: 'npm:nope' }),
+})
+console.log('unknown task', unknown.status)
+if (unknown.status !== 400) throw new Error('an unknown task must be a 400')
+
 /* ------------------------------------------------ packaging (export) */
 
 console.log('\n--- export ---')
@@ -307,6 +339,18 @@ try {
   }
   console.log('window closed ->', closed?.errorCode ?? 'not detected', '|', closed?.error ?? '')
   if (!closed) throw new Error('closing the window must be reported as window-closed')
+
+  // the agent can read the logs and grab the current frame
+  const logsTool = tools.get('game_preview_logs')
+  const shotTool = tools.get('game_preview_screenshot')
+  if (!logsTool || !shotTool) throw new Error('agent tools for logs/screenshot are missing')
+  const logsOut = JSON.parse(await logsTool.execute({ lines: 5 }, { agent: {} }))
+  console.log('logs tool', logsOut.ok, '| lines:', logsOut.lines?.length ?? 0)
+  if (!logsOut.ok) throw new Error('logs tool failed')
+  const shotOut = JSON.parse(await shotTool.execute({ label: 'harness' }, { agent: {} }))
+  console.log('screenshot tool', shotOut.ok, '|', String(shotOut.file ?? shotOut.error).slice(0, 80))
+  if (!shotOut.ok) throw new Error('screenshot tool failed: ' + shotOut.error)
+  if (!existsSync(shotOut.file)) throw new Error('screenshot file was not written')
 
   // quality switch restarts the capture with new options on the same window
   const qualityPad = spawn('notepad.exe', [], { windowsHide: false, detached: false })

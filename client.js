@@ -393,6 +393,11 @@ window.__ModuleLoader__.load({
       .gp-export-log{font-size:10px;opacity:.72;background:color-mix(in srgb, currentColor 6%, transparent);border-radius:6px;padding:6px 8px;
         max-height:96px;overflow:auto;line-height:1.6;word-break:break-all}
       .gp-export-run{color:#c8892f}
+      .gp-export-section{display:flex;flex-direction:column;gap:4px;padding-top:4px;border-top:1px solid color-mix(in srgb, currentColor 10%, transparent)}
+      .gp-export-group{display:flex;flex-direction:column;gap:2px}
+      .gp-size-row{display:flex;align-items:center;gap:8px;font-size:11px}
+      .gp-size-pct{font-size:10px;opacity:.7}
+      .gp-size-pct[data-warn="1"]{color:#d98c2f;opacity:1}
       .gp-export-result{display:flex;align-items:center;gap:8px;font-size:11px}
       .gp-crop{position:absolute;inset:0;overflow:hidden;background:#000}
       .gp-crop-inner{position:absolute;transform-origin:top left}
@@ -544,6 +549,18 @@ window.__ModuleLoader__.load({
         }
       }
 
+      const runTask = async (id) => {
+        setBusy(true)
+        setError(null)
+        try {
+          setState(await call('/api/tasks/run', { method: 'POST', body: JSON.stringify({ id }) }))
+        } catch (err) {
+          setError(String(err?.message ?? err))
+        } finally {
+          setBusy(false)
+        }
+      }
+
       const reveal = async (file) => {
         try {
           await call('/api/reveal', { method: 'POST', body: JSON.stringify({ path: file }) })
@@ -612,6 +629,35 @@ window.__ModuleLoader__.load({
               disabled: busy || state?.running || !ready(target.id),
               onClick: () => void start(target.id),
             }, '导出'))),
+        (state?.tasks ?? []).length
+          ? h('div', { className: 'gp-export-section' },
+              h('div', { className: 'gp-export-head' }, h('strong', null, '工程脚本'), h('span', { className: 'gp-note', style: { fontSize: 10 } }, 'package.json · android/ · tools/')),
+              ...['build', 'release', 'verify', 'bench'].map((group) => {
+                const rows = (state.tasks ?? []).filter((t) => t.group === group)
+                if (!rows.length) return null
+                return h('div', { key: group, className: 'gp-export-group' },
+                  ...rows.map((task) => h('div', { key: task.id, className: 'gp-export-row' },
+                    h('span', { style: { flex: 1, minWidth: 0, fontSize: 11 } }, task.label,
+                      h('span', { className: 'gp-note', style: { marginLeft: 6, fontSize: 10 } }, task.detail ?? '')),
+                    h('button', {
+                      className: 'gp-btn',
+                      disabled: busy || state?.running,
+                      onClick: () => void runTask(task.id),
+                    }, '▶'))))
+              }))
+          : null,
+        (state?.sizes ?? []).length
+          ? h('div', { className: 'gp-export-section' },
+              h('div', { className: 'gp-export-head' }, h('strong', null, '包体积')),
+              ...state.sizes.map((row) => h('div', { key: row.path, className: 'gp-size-row' },
+                h('span', { style: { flex: 1, minWidth: 0, fontSize: 11, wordBreak: 'break-all' } },
+                  `${row.kind} · ${(row.bytes / 1024 / 1024).toFixed(2)} MB`),
+                h('span', {
+                  className: 'gp-size-pct',
+                  'data-warn': row.percent && row.percent >= 80 ? '1' : '0',
+                  title: `上限 ${(row.limit / 1024 / 1024).toFixed(0)} MB`,
+                }, row.percent !== null ? `${row.percent}%` : ''))))
+          : null,
         state?.running
           ? h('div', { className: 'gp-export-log' }, h('div', { className: 'gp-export-run' }, `正在构建 ${state.target}…`), ...(state.log ?? []).map((line, i) => h('div', { key: i }, line)))
           : state?.log?.length

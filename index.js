@@ -7,7 +7,7 @@
  */
 import { createServer } from 'node:http'
 import { spawn, execFile } from 'node:child_process'
-import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch } from 'node:fs'
+import { copyFileSync, existsSync, mkdirSync, readFileSync, readdirSync, statSync, watch, writeFileSync } from 'node:fs'
 import { dirname, join, resolve, sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { WindowCapture } from './host/window.js'
@@ -395,6 +395,118 @@ function toolchain(config, root) {
     exeReady: Boolean(findExecutable(['cmake.exe']) && firstExisting(['C:/Program Files/Microsoft Visual Studio/2022/BuildTools'])),
     root: root ?? null,
   }
+}
+
+/* --------------------------------------------------------------- tasks */
+
+const TASK_GROUPS = [
+  { key: 'build', label: '构建', test: /^(build|bundle|package|compile)/i },
+  { key: 'release', label: '发布', test: /^(release|publish|manifest)/i },
+  { key: 'verify', label: '校验', test: /^(test|preflight|check|lint|typecheck|validate|audit)/i },
+  { key: 'bench', label: '基准', test: /^(bench|benchmark|sim|profile)/i },
+]
+
+/** Everything in the project that is worth one click from the panel. */
+function listTasks(root, config) {
+  const tasks = []
+  const push = (task) => {
+    if (!task?.id || tasks.some((t) => t.id === task.id)) return
+    tasks.push(task)
+  }
+
+  const pkg = has(root, 'package.json') ? safeJson(join(root, 'package.json')) : null
+  for (const [name, body] of Object.entries(pkg?.scripts ?? {})) {
+    const group = TASK_GROUPS.find((g) => g.test.test(name))?.key ?? 'other'
+    push({
+      id: `npm:${name}`,
+      label: name,
+      group,
+      kind: 'npm',
+      cmd: 'npm run ' + name,
+      detail: String(body).slice(0, 80),
+    })
+  }
+
+  if (has(root, 'android/build.sh')) {
+    push({ id: 'sh:android/build.sh', label: 'APK · android/build.sh', group: 'build', kind: 'shell', cmd: toPosixPath(join(root, 'android', 'build.sh')), detail: '项目自带的安卓打包脚本' })
+  }
+  if (has(root, 'build_apk.js')) {
+    push({ id: 'node:build_apk.js', label: 'APK · build_apk.js', group: 'build', kind: 'node', cmd: 'build_apk.js', detail: '项目自带的 APK 脚本' })
+  }
+  if (has(root, 'tools/build-platform.mjs')) {
+    for (const platform of ['wechat', 'douyin', 'taptap']) {
+      push({
+        id: `node:tools/build-platform.mjs:${platform}`,
+        label: `${platform} 包`,
+        group: 'build',
+        kind: 'node',
+        cmd: 'tools/build-platform.mjs',
+        args: [platform],
+        detail: 'tools/build-platform.mjs',
+      })
+    }
+  }
+
+  return tasks
+}
+
+const SIZE_LIMITS = {
+  wechat: 4 * 1024 * 1024,
+  douyin: 4 * 1024 * 1024,
+  taptap: 4 * 1024 * 1024,
+  web: 32 * 1024 * 1024,
+}
+
+function dirSize(dir) {
+  let total = 0
+  const walk = (current) => {
+    let entries = []
+    try {
+      entries = readdirSync(current, { withFileTypes: true })
+    } catch {
+      return
+    }
+    for (const entry of entries) {
+      const full = join(current, entry.name)
+      try {
+        if (entry.isDirectory()) walk(full)
+        else total += statSync(full).size
+      } catch {}
+    }
+  }
+  walk(dir)
+  return total
+}
+
+/** Per-platform bundle sizes against the store limits that reject builds. */
+function sizeReport(root) {
+  const out = []
+  const candidates = [
+    ['wechat', ['release/builds/wechat', 'build/wechatgame']],
+    ['douyin', ['release/builds/douyin', 'build/bytedance-mini-game']],
+    ['taptap', ['release/builds/taptap', 'build/TapBuild']],
+    ['web', ['cocos/build/web-desktop', 'build/web-desktop', 'cocos/build/web-mobile', 'build/web-mobile', 'web']],
+  ]
+  for (const [kind, paths] of candidates) {
+    for (const rel of paths) {
+      const dir = join(root, rel)
+      if (!existsSync(dir)) continue
+      let size = 0
+      try {
+        size = dirSize(dir)
+      } catch {}
+      if (!size) continue
+      const limit = rel.includes('web') ? SIZE_LIMITS.web : SIZE_LIMITS[kind]
+      out.push({
+        kind,
+        path: rel,
+        bytes: size,
+        limit,
+        percent: limit ? Math.round((size / limit) * 1000) / 10 : null,
+      })
+    }
+  }
+  return out
 }
 
 /* ------------------------------------------------------------- html bundle */
@@ -1054,6 +1166,8 @@ export function apply(ctx, config = {}) {
       error: exportJob.error,
       dist: state.lastRoot ? join(state.lastRoot, DIST) : null,
       toolchain: toolchain(config, state.lastRoot ?? undefined),
+      tasks: state.lastRoot ? listTasks(state.lastRoot, config) : [],
+      sizes: state.lastRoot ? sizeReport(state.lastRoot) : [],
     }
   }
 
@@ -1116,6 +1230,46 @@ export function apply(ctx, config = {}) {
     }
     walk(dir)
     return best
+  }
+
+  async function startTask(taskId, runEnv = {}) {
+    if (exportJob.running) throw new Error('已经有一个任务在跑')
+    const root = state.lastRoot
+    if (!root) throw new Error('还没有工作区')
+    const task = listTasks(root, config).find((t) => t.id === taskId)
+    if (!task) throw new Error(`未知的工程脚本：${taskId}`)
+
+    exportJob.running = true
+    exportJob.target = `task:${task.id}`
+    exportJob.startedAt = Date.now()
+    exportJob.log = []
+    exportJob.result = null
+    exportJob.error = null
+
+    void (async () => {
+      try {
+        exportPush(`# ${task.label} — ${task.detail ?? task.cmd}`)
+        if (task.kind === 'npm') {
+          await runProcess('cmd.exe', ['/d', '/s', '/c', task.cmd], root, task.cmd, 30 * 60 * 1000, runEnv)
+        } else if (task.kind === 'shell') {
+          const bash = findPosixBash()
+          if (!bash) throw new Error('没有找到 Git Bash，无法执行 .sh 脚本')
+          await runProcess(bash, [task.cmd], root, task.label, 30 * 60 * 1000, runEnv)
+        } else {
+          const node = process.execPath
+          await runProcess(node, [task.cmd, ...(task.args ?? [])], root, task.label, 30 * 60 * 1000, runEnv)
+        }
+        exportJob.result = { kind: 'task', file: null, size: null }
+        exportPush(`完成：${task.label}`)
+      } catch (error) {
+        exportJob.error = String(error?.message ?? error)
+        exportPush(`失败：${exportJob.error}`)
+      } finally {
+        exportJob.running = false
+      }
+    })()
+
+    return exportStatus()
   }
 
   async function startExport(target, runEnv = {}) {
@@ -1651,6 +1805,21 @@ export function apply(ctx, config = {}) {
       return
     }
 
+    if (path === '/api/tasks' && req.method === 'GET') {
+      send(res, headers, { ok: true, tasks: state.lastRoot ? listTasks(state.lastRoot, config) : [], sizes: state.lastRoot ? sizeReport(state.lastRoot) : [] })
+      return
+    }
+
+    if (path === '/api/tasks/run' && req.method === 'POST') {
+      const body = await readBody(req)
+      try {
+        send(res, headers, await startTask(String(body?.id ?? ''), body?.env ?? {}))
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 400)
+      }
+      return
+    }
+
     if (path === '/api/export' && req.method === 'GET') {
       send(res, headers, exportStatus())
       return
@@ -2057,6 +2226,63 @@ export function apply(ctx, config = {}) {
   })
 
   registerTool({
+    name: 'game_preview_screenshot',
+    description:
+      'Save the current preview frame (native window capture) to the project as a JPEG and return its absolute path, so the agent can open it with read_image and inspect the game visually.',
+    parameters: {
+      label: { type: 'string', description: 'Optional short label used in the file name, e.g. "battle" or "ui-hud".' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args, exec) {
+      const root = await currentRoot(exec)
+      try {
+        const caps = capture.status()
+        if (!caps.running && !capture.last()) {
+          return JSON.stringify({ ok: false, error: '当前没有原生窗口画面：先运行 Unity/Godot 预览，或用 game_preview_windows 挂一个窗口' })
+        }
+        const frame = caps.running ? (await capture.waitForFrame(0, 1500)) ?? capture.last() : capture.last()
+        if (!frame) return JSON.stringify({ ok: false, error: '还没有抓到帧' })
+        const safe = String(args?.label ?? 'shot').replace(/[^\w.-]+/g, '-').slice(0, 40)
+        const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
+        const dir = join(root, '.dsh-game-preview', 'shots')
+        mkdirSync(dir, { recursive: true })
+        const file = join(dir, `${stamp}-${safe}.jpg`)
+        writeFileSync(file, frame.jpeg)
+        return JSON.stringify({ ok: true, file, width: frame.width, height: frame.height, bytes: frame.jpeg.length, capturedAt: frame.at })
+      } catch (error) {
+        return JSON.stringify({ ok: false, error: String(error?.message ?? error) })
+      }
+    },
+  })
+
+  registerTool({
+    name: 'game_preview_logs',
+    description:
+      'Read the tail of the preview process output for this workspace: dev-server / engine stdout and stderr, plus the capture error if any.',
+    parameters: {
+      lines: { type: 'number', description: 'How many lines to return (default 40, max 200).' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      const count = Math.min(200, Math.max(1, Number(args?.lines) || 40))
+      const caps = capture.status()
+      return JSON.stringify({
+        ok: true,
+        running: Boolean(proc.child),
+        active: state.active ?? null,
+        capture: { running: caps.running, fps: caps.fps, error: caps.error ?? null },
+        lines: proc.logTail.slice(-count),
+      })
+    },
+  })
+
+  registerTool({
     name: 'game_preview_status',
     description:
       'Read the game preview state for the current workspace: detected run configurations, the active preview URL, whether a process is running, and which files changed since the last run.',
@@ -2248,6 +2474,25 @@ export function apply(ctx, config = {}) {
         return jsonResponse({ ok: true })
       } catch (error) {
         return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
+      }
+    }, 'buffered')
+
+    add(`${API_PREFIX}/tasks`, ['GET'], () =>
+      jsonResponse({
+        ok: true,
+        tasks: state.lastRoot ? listTasks(state.lastRoot, config) : [],
+        sizes: state.lastRoot ? sizeReport(state.lastRoot) : [],
+      }))
+
+    add(`${API_PREFIX}/tasks/run`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      try {
+        return jsonResponse(await startTask(String(body?.id ?? ''), body?.env ?? {}))
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 400)
       }
     }, 'buffered')
 

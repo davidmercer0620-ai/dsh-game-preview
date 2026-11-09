@@ -37,6 +37,9 @@ Every engine has one loop that is faster than all the others. The panel picks th
 | **Dirty counter** | Saving does not reload; the panel shows how many changes are waiting, then one click reruns |
 | **Agent tools** | `game_preview_run` / `game_preview_status` / `game_preview_stop` / `game_preview_windows` |
 | **Package the game** | 📦 exports a Web zip, an Android APK (reusing the project's own `android/` shell), or a Windows EXE when the toolchain exists |
+| **Project scripts, one click** | The export panel lists `package.json` scripts (build/release/verify/bench), `android/build.sh`, `build_apk.js` and `tools/build-platform.mjs` and runs them with a live log |
+| **Bundle size budget** | Per-platform sizes against the store limits (WeChat/Douyin/TapTap 4 MB, web 32 MB), warn at 80% |
+| **Agent eyes** | `game_preview_screenshot` saves the current frame into the project and returns its path; `game_preview_logs` returns the process tail, so the agent can inspect the game itself |
 | **Hotkeys** | `F` full-bleed · `R` reload · `Esc` leave |
 
 ## Install
