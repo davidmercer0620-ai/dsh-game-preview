@@ -652,7 +652,7 @@ function detect(root) {
           const screen = settings?.screen
           if (screen?.designResolution) {
             const { width, height } = screen.designResolution
-            const orientation = screen.orientation === 'portrait' ? '竖屏' : screen.orientation === 'landscape' ? '横屏' : '自适应'
+            const orientation = screen.orientation === 'portrait' ? '竖屏' : screen.orientation === 'landscape' ? '横屏' : '方向未指定'
             screenInfo = `${orientation} ${width}×${height}${screen.exactFitScreen ? ' · 自适应' : ' · 固定画布'}`
           }
         } catch {}
