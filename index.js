@@ -644,12 +644,24 @@ function detect(root) {
       for (const child of children) {
         const rel = `${baseRel}/${child}`
         if (!has(root, `${rel}/index.html`)) continue
+        // Cocos writes its screen contract next to the build; surfacing it saves
+        // guessing why a portrait build overflows a landscape viewport
+        let screenInfo = ''
+        try {
+          const settings = safeJson(join(root, rel, 'src', 'settings.json'))
+          const screen = settings?.screen
+          if (screen?.designResolution) {
+            const { width, height } = screen.designResolution
+            const orientation = screen.orientation === 'portrait' ? '竖屏' : screen.orientation === 'landscape' ? '横屏' : '自适应'
+            screenInfo = `${orientation} ${width}×${height}${screen.exactFitScreen ? ' · 自适应' : ' · 固定画布'}`
+          }
+        } catch {}
         add({
           id: `static@${rel}`,
           dir: rel,
           kind: 'web',
           title: `构建产物 · ${child}${prefix ? `（${prefix}）` : ''}`,
-          detail: 'Cocos / 引擎导出的网页包',
+          detail: screenInfo || 'Cocos / 引擎导出的网页包',
           file: 'index.html',
           estimatedMs: 200,
           reload: 'manual',
