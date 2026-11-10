@@ -81,6 +81,7 @@ Every engine has one loop that is faster than all the others. The panel picks th
 | **Build history** | Every export and project-script run is appended to `.dsh-game-preview/history.json`; the panel shows duration and byte delta |
 | **Project board** | A thumbnail wall of every workspace with its latest recorded frame; click to switch the panel |
 | **Agent eyes** | `game_preview_screenshot` saves the current frame into the project and returns its path; `game_preview_logs` returns the process tail, so the agent can inspect the game itself |
+| **The page reports itself** | Every served document gets a tiny probe: uncaught errors with stacks, unhandled rejections, `console.error`, failed asset loads, and a measured frame rate. The chips row shows `⚠ 3` or `58fps`, and `game_preview_console` hands the same list to the agent |
 | **Hotkeys** | `F` full-bleed · `R` reload · `Esc` leave |
 
 ## Install

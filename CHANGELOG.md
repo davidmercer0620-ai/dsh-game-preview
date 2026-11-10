@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.10.0 — 2026-11-10
+
+Agent 最缺的不是"能操作"，而是"能看见结果"。这一版让被预览的页面自己开口：
+
+- 静态服务在返回 HTML 时注入探针（`/probe.js`）：`window.onerror`、`unhandledrejection`、`console.error`、**资源 404**、以及每 2 秒一次的实测 FPS
+- `GET /api/telemetry` 读回环形缓冲；`/api/state` 带一份健康摘要，芯片行显示 `⚠ 3`（红）或 `58fps`
+- 新工具 `game_preview_console`：agent 可以直接问"页面报错了没有、跑多少帧"
+- 实测：`炉石传说` web-mobile 构建 → **60 fps · 0 错误**
+
 ## 0.9.0 — 2026-11-10
 
 接住那位开发者剩下的两条意见：
