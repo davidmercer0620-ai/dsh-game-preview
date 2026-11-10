@@ -679,6 +679,74 @@ function sizeBreakdown(dir) {
   }
 }
 
+
+/* ---------------------------------------------------------- runtime probe */
+
+const PROBE_SCRIPT = `(function () {
+  if (window.__dshPreviewProbe) return;
+  window.__dshPreviewProbe = true;
+  var post = function (kind, data) {
+    try {
+      var body = JSON.stringify(Object.assign({ kind: kind, href: location.href, at: Date.now() }, data));
+      if (navigator.sendBeacon) navigator.sendBeacon('/api/probe', new Blob([body], { type: 'application/json' }));
+      else fetch('/api/probe', { method: 'POST', body: body, headers: { 'x-dsh-preview': 'probe' } });
+    } catch (e) {}
+  };
+  var onError = function (event) {
+    if (event && event.target && (event.target.src || event.target.href)) {
+      post('resource', { message: (event.target.tagName || '').toLowerCase() + ' 加载失败：' + (event.target.src || event.target.href) });
+      return;
+    }
+    post('error', {
+      message: String((event && (event.message || event.error)) || 'unknown'),
+      stack: String((event && event.error && event.error.stack) || '').slice(0, 1200)
+    });
+  };
+  window.addEventListener('error', onError, true);
+  window.addEventListener('unhandledrejection', function (event) {
+    var reason = event && event.reason;
+    post('rejection', { message: String((reason && (reason.message || reason)) || 'unhandledrejection'), stack: String((reason && reason.stack) || '').slice(0, 800) });
+  });
+  var errorLog = console.error;
+  console.error = function () {
+    try {
+      var text = Array.prototype.map.call(arguments, function (a) { return (a && a.stack) || String(a); }).join(' ').slice(0, 600);
+      post('console', { message: text });
+    } catch (e) {}
+    return errorLog.apply(console, arguments);
+  };
+  var frames = 0, last = performance.now();
+  var tick = function () {
+    frames++;
+    var now = performance.now();
+    if (now - last >= 2000) {
+      post('fps', { fps: Math.round(frames * 1000 / (now - last)) });
+      frames = 0;
+      last = now;
+    }
+    requestAnimationFrame(tick);
+  };
+  requestAnimationFrame(tick);
+  post('hello', {});
+})();`
+
+function decodeRootToken(token) {
+  try {
+    return resolve(Buffer.from(token, 'base64url').toString('utf8'))
+  } catch {
+    return null
+  }
+}
+
+/** Inject the probe into a served document, right before </head>. */
+function injectProbe(html) {
+  const tag = '<script src="/probe.js"></script>'
+  if (html.includes(tag)) return html
+  const head = html.search(/<\/head>/i)
+  if (head === -1) return `${tag}${html}`
+  return html.slice(0, head) + tag + html.slice(head)
+}
+
 /* ------------------------------------------------------------- html bundle */
 
 const BUNDLE_MAX_BYTES = 12 * 1024 * 1024
@@ -987,6 +1055,8 @@ export function apply(ctx, config = {}) {
   // for ten minutes in the editor produces a handful of meaningful stills, not
   // a video stream. That is the point — review the result, not the process.
   const timeline = { enabled: config.timelineAuto !== false, frames: [], lastHash: null, lastAt: 0, seq: 0, root: null }
+  // what the page itself reports: uncaught errors, failed assets, frame rate
+  const telemetry = new Map()
   const history = { loaded: false, items: [] }
   const capture = new WindowCapture({
     helperPath: join(HERE, 'host', 'window-capture.ps1'),
@@ -1618,6 +1688,44 @@ export function apply(ctx, config = {}) {
       .map((root) => projectSummary(root))
       .sort((a, b) => (b.lastAt ?? 0) - (a.lastAt ?? 0))
       .slice(0, 24)
+  }
+
+  function telemetryFor(root) {
+    const key = root || '(unknown)'
+    let entry = telemetry.get(key)
+    if (!entry) {
+      entry = { root: key, errors: [], fps: null, lastAt: 0, counts: {} }
+      telemetry.set(key, entry)
+    }
+    return entry
+  }
+
+  function telemetryPush(root, payload) {
+    const entry = telemetryFor(root)
+    entry.lastAt = Date.now()
+    const kind = String(payload?.kind ?? 'error')
+    if (kind === 'fps') {
+      entry.fps = Number(payload.fps) || entry.fps
+      return entry
+    }
+    if (kind === 'hello') return entry
+    entry.counts[kind] = (entry.counts[kind] ?? 0) + 1
+    entry.errors.push({ at: Date.now(), kind, message: String(payload?.message ?? '').slice(0, 600), stack: String(payload?.stack ?? '').slice(0, 1200) })
+    if (entry.errors.length > 60) entry.errors.shift()
+    return entry
+  }
+
+  function telemetryStatus(root) {
+    const key = root ?? state.lastRoot ?? currentRootSync() ?? ''
+    const entry = telemetry.get(key)
+    return {
+      ok: true,
+      root: key || null,
+      fps: entry?.fps ?? null,
+      lastAt: entry?.lastAt ?? null,
+      errors: entry?.errors?.slice(-20) ?? [],
+      counts: entry?.counts ?? {},
+    }
   }
 
   function timelineDir(root) {
@@ -2299,6 +2407,28 @@ print('ok')
       return
     }
 
+    if (path === '/probe.js' && req.method === 'GET') {
+      res.writeHead(200, { ...headers, 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' })
+      res.end(PROBE_SCRIPT)
+      return
+    }
+
+    if (path === '/api/probe' && req.method === 'POST') {
+      const body = await readBody(req)
+      const referer = String(req.headers?.referer ?? '')
+      const match = /\/static\/([^/]+)/.exec(referer)
+      const root = match ? decodeRootToken(match[1]) : state.lastRoot
+      telemetryPush(root, body)
+      res.writeHead(204, headers)
+      res.end()
+      return
+    }
+
+    if (path === '/api/telemetry' && req.method === 'GET') {
+      send(res, headers, telemetryStatus(url.searchParams.get('root') ?? undefined))
+      return
+    }
+
     if (path === '/api/timeline' && req.method === 'GET') {
       const root = state.lastRoot
       if (root && timeline.root !== root) timelineLoad(root)
@@ -2498,8 +2628,15 @@ print('ok')
         return
       }
       try {
+        const type = mimeOf(target)
+        if (/\.html?$/i.test(target) || type.includes('text/html')) {
+          const html = injectProbe(readFileSync(target, 'utf8'))
+          res.writeHead(200, { ...headers, 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' })
+          res.end(html)
+          return
+        }
         const data = readFileSync(target)
-        res.writeHead(200, { ...headers, 'content-type': mimeOf(target) })
+        res.writeHead(200, { ...headers, 'content-type': type })
         res.end(data)
       } catch {
         send(res, headers, { ok: false, error: 'not found' }, 404)
@@ -2861,8 +2998,38 @@ print('ok')
         ok: true,
         running: Boolean(proc.child),
         active: state.active ?? null,
+        health: telemetryStatus(state.lastRoot ?? undefined),
         capture: { running: caps.running, fps: caps.fps, error: caps.error ?? null },
         lines: proc.logTail.slice(-count),
+      })
+    },
+  })
+
+  registerTool({
+    name: 'game_preview_console',
+    description:
+      'Read what the running web preview reports about itself: uncaught errors, failed asset loads, unhandled rejections, console.error lines and the measured frame rate. Use it right after a change to see whether the game actually runs.',
+    parameters: {
+      limit: { type: 'number', description: 'How many error entries to return (default 20, max 50).' },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args, exec) {
+      const limit = Math.min(50, Math.max(1, Number(args?.limit) || 20))
+      const root = await currentRoot(exec)
+      const status = telemetryStatus(root)
+      return JSON.stringify({
+        ok: true,
+        root: status.root,
+        fps: status.fps,
+        errorCount: status.errors.length,
+        counts: status.counts,
+        errors: status.errors.slice(-limit),
+        hint: status.errors.length
+          ? 'These came from the page itself (window.onerror, resource failures, console.error).'
+          : 'No runtime errors reported. A web build reports only while its page is open — run the preview first.',
       })
     },
   })
@@ -3061,6 +3228,11 @@ print('ok')
         return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 500)
       }
     }, 'buffered')
+
+    add(`${API_PREFIX}/telemetry`, ['GET'], (request) => {
+      const params = new URL(String(request?.url ?? ''), originOf()).searchParams
+      return jsonResponse(telemetryStatus(params.get('root') ?? undefined))
+    })
 
     add(`${API_PREFIX}/projects`, ['GET'], () => jsonResponse({ ok: true, projects: projectBoard() }))
 

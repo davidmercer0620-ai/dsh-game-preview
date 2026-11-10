@@ -171,6 +171,35 @@ const blocked = await fetch(base + '/static/' + forged + '/win.ini')
 console.log('unregistered root', blocked.status)
 if (blocked.status !== 403) throw new Error('static route must refuse unregistered roots')
 
+/* ------------------------------------------------ runtime probe */
+
+console.log('\n--- runtime probe ---')
+
+const probeJs = await fetch(base + '/probe.js')
+const probeBody = await probeJs.text()
+console.log('probe.js', probeJs.status, probeBody.length, 'chars')
+if (probeJs.status !== 200 || !probeBody.includes('__dshPreviewProbe')) throw new Error('probe script missing')
+
+// the served document must carry the probe, and a report must land in telemetry
+const staticUrl = (await (await fetch(base + '/api/state')).json()).active?.url ?? ''
+if (staticUrl) {
+  const html = await (await fetch(staticUrl)).text()
+  console.log('probe injected:', html.includes('/probe.js'), '| bytes', html.length)
+  if (!html.includes('/probe.js')) throw new Error('the probe was not injected into the served page')
+  const report = await fetch(base + '/api/probe', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', referer: staticUrl },
+    body: JSON.stringify({ kind: 'error', message: 'harness boom', stack: 'at x' }),
+  })
+  console.log('probe post', report.status)
+  if (report.status !== 204) throw new Error('probe endpoint must answer 204')
+  const telemetry = await (await fetch(base + '/api/telemetry')).json()
+  console.log('telemetry errors:', telemetry.errors.length, '| newest:', telemetry.errors.at(-1)?.message)
+  if (!telemetry.errors.length) throw new Error('telemetry did not record the report')
+} else {
+  console.log('no static preview active, skipping injection check')
+}
+
 /* ------------------------------------------------ project board */
 
 console.log('\n--- project board ---')

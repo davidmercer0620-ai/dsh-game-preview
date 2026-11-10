@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.9.0'
+    const CLIENT_BUILD = '0.10.0'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -1830,6 +1830,9 @@ window.__ModuleLoader__.load({
                 })))
         : empty
 
+      const pageHealth = snap?.health ?? null
+      const healthErrors = pageHealth?.errors?.length ?? 0
+      const healthFps = pageHealth?.fps ?? null
       const viewportHint = !isWindow && buildKind === 'desktop' && viewport === 'mobile'
         ? '这个包是 PC 构建（web-desktop 不会自适应画布），手机预览会溢出并出现滚动条。切到「构建产物 · web-mobile」才是竖屏适配。'
         : !isWindow && buildKind === 'mobile' && viewport === 'pc'
@@ -1927,6 +1930,14 @@ window.__ModuleLoader__.load({
       return h('div', { className: 'gp-root' },
         useStyles(),
         h('div', { className: 'gp-chips' },
+          healthFps || healthErrors
+            ? h('button', {
+                className: 'gp-chip gp-chip-health',
+                'data-danger': healthErrors > 0 ? '1' : '0',
+                title: healthErrors ? `${healthErrors} 个运行时错误（点开看）` : '页面自报帧率',
+                onClick: () => setShowLogs(true),
+              }, healthErrors ? `⚠ ${healthErrors}` : `${healthFps ?? '-'}fps`)
+            : null,
           chips.length ? chips : h('span', { className: 'gp-chip' }, '未检测到项目'),
           canCapture
             ? h('button', { className: 'gp-chip', disabled: winBusy, title: '把任意已运行的窗口接进舞台', onClick: () => void openPicker() }, '选择窗口')
