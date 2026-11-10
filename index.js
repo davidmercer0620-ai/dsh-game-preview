@@ -1845,6 +1845,7 @@ export function apply(ctx, config = {}) {
     let a = body?.a ? resolve(String(body.a)) : null
     let b = body?.b ? resolve(String(body.b)) : null
     if (!a || !b) {
+      if (root && timeline.root !== root) timelineLoad(root)
       const frames = timeline.frames.filter((f) => existsSync(f.file))
       if (frames.length < 2) throw new Error('至少需要两张画面：先打开记录，或显式传 a / b 两个文件')
       a = frames[frames.length - 2].file
