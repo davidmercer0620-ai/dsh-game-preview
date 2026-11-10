@@ -34,6 +34,7 @@ https://raw.githubusercontent.com/davidmercer0620-ai/dsh-game-preview/main/docs/
 Then open a game project and click **▷ 预览** in the chat header.
 
 - **Numbers, not adjectives** → [docs/CASE_STUDY.md](docs/CASE_STUDY.md) (15.2 fps Unity capture, 1m20s APK, 0.64 MB TapTap bundle, 14 croppable engine modules)
+- **How it was built** → [docs/BLOG.md](docs/BLOG.md) (the iframe-bridge dead end, PrintWindow vs WGC, three white screens)
 - **Skeptical questions answered** → [docs/FAQ.md](docs/FAQ.md) ("why not MCP?", "isn't this just a screen recorder?", "will it eat my CPU?")
 
 <p align="center"><em>The 游戏预览 tab: engine/build chips, a real 390×844 phone viewport, and the run bar with packaging, console and export below.</em></p>
