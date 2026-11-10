@@ -79,6 +79,7 @@ Every engine has one loop that is faster than all the others. The panel picks th
 | **Bundle size budget** | Per-platform sizes against the store limits (WeChat/Douyin/TapTap 4 MB, web 32 MB), warn at 80%; click a row for the directory/extension/file breakdown |
 | **Phone preview by QR** | Shares the running static build over the LAN behind a random token, shows a QR (host-side python-qrcode, no client dependency), expires after 30 minutes |
 | **Build history** | Every export and project-script run is appended to `.dsh-game-preview/history.json`; the panel shows duration and byte delta |
+| **Pipeline bar** | 改动 → 运行 → 自检 → 打包, live: a pulsing dot while the workspace is changing, parsed percent for long build jobs, elapsed seconds |
 | **Project board** | A thumbnail wall of every workspace with its latest recorded frame; click to switch the panel |
 | **Playtest replay** | `game_preview_playtest` replays `{wait, click, key, shot}` steps against a window and returns the screenshots plus the page errors collected during the run |
 | **One-command check** | `game_preview_check` runs the whole chain — page errors, fps, a still, an optional playtest, a pixel diff against the previous check, bundle sizes and cropping candidates — and answers pass / warn / fail with evidence paths |

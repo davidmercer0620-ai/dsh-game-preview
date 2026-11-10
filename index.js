@@ -1376,6 +1376,7 @@ export function apply(ctx, config = {}) {
       configs: entry?.configs ?? [],
       dirty: entry ? [...entry.dirty] : [],
       active: state.active,
+      progress: progress.snapshot(),
       running: Boolean(proc.child),
       error: state.lastError ?? caps.error ?? null,
       ports: servedPorts,
