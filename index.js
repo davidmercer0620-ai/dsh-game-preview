@@ -811,6 +811,22 @@ function cropReport(root) {
   }
   const blob = haystack.join('\n')
 
+  // show what the scanner actually saw, so "unused" is verifiable rather than a
+  // claim without evidence
+  const counts = new Map()
+  const bump = (name) => {
+    if (!name || name.length > 60) return
+    counts.set(name, (counts.get(name) ?? 0) + 1)
+  }
+  for (const match of blob.matchAll(/"__type__"\s*:\s*"([^"]+)"/g)) bump(match[1])
+  for (const match of blob.matchAll(/addComponent\(\s*([A-Za-z_$][\w$.]*)/g)) bump(match[1])
+  for (const match of blob.matchAll(/@(?:ccclass|property)\([^)]*\)\s*\n?\s*(?:export\s+)?class\s+([A-Za-z_$][\w$]*)/g)) bump(match[1])
+  const components = [...counts.entries()]
+    .filter(([name]) => !/^(cc\.Node|cc\.Scene|cc\.Prefab|cc\.Component|cc\._|cc\.Asset|cc\.SceneAsset|cc\.Size|cc\.Vec[23]|cc\.Color|cc\.Rect|cc\.Quat|cc\.NodePool)/.test(name))
+    .sort((a, b) => b[1] - a[1])
+    .slice(0, 14)
+    .map(([name, count]) => ({ name, count }))
+
   const modules = CROP_MODULES.map((module) => {
     const hits = module.patterns.reduce((count, pattern) => count + (blob.match(new RegExp(pattern.source, 'gi'))?.length ?? 0), 0)
     return { id: module.id, label: module.label, saves: module.saves, hits, used: hits > 0 }
@@ -829,6 +845,7 @@ function cropReport(root) {
     ok: true,
     assetsDir,
     scanned: { scenes: scenes.length, scripts: scripts.length },
+    components,
     engineBytes,
     modules,
     unused: unused.map((m) => ({ id: m.id, label: m.label, saves: m.saves })),

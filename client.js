@@ -518,6 +518,27 @@ window.__ModuleLoader__.load({
       const [breakdown, setBreakdown] = useState(null)
       const [share, setShare] = useState(null)
       const [history, setHistory] = useState([])
+      const [timeline, setTimeline] = useState(null)
+      const [gifBusy, setGifBusy] = useState(false)
+      const [gifResult, setGifResult] = useState(null)
+      const [cropReport, setCropReport] = useState(null)
+      const [diffResult, setDiffResult] = useState(null)
+
+      useEffect(() => {
+        let alive = true
+        const tick = async () => {
+          try {
+            const next = await call('/api/timeline')
+            if (alive) setTimeline(next)
+          } catch {}
+        }
+        void tick()
+        const timer = setInterval(() => void tick(), 3000)
+        return () => {
+          alive = false
+          clearInterval(timer)
+        }
+      }, [])
 
       const parseEnv = () => {
         const out = {}
@@ -530,6 +551,15 @@ window.__ModuleLoader__.load({
         }
         return out
       }
+
+      useEffect(() => {
+        void (async () => {
+          try {
+            const report = await call('/api/crop')
+            if (report.ok) setCropReport(report)
+          } catch {}
+        })()
+      }, [])
 
       useEffect(() => {
         let alive = true
@@ -700,6 +730,18 @@ window.__ModuleLoader__.load({
               disabled: busy || state?.running || !ready(target.id),
               onClick: () => void start(target.id),
             }, '导出'))),
+        cropReport?.ok && cropReport.unused?.length
+          ? h('div', { className: 'gp-export-section' },
+              h('div', { className: 'gp-export-head' },
+                h('strong', null, '引擎裁剪'),
+                h('span', { className: 'gp-note', style: { flex: 1, fontSize: 10 } },
+                  `${cropReport.scanned.scenes} 场景 · ${cropReport.scanned.scripts} 脚本 · 引擎包 ${(cropReport.engineBytes / 1024 / 1024).toFixed(2)} MB`)),
+              h('div', { className: 'gp-shots' },
+                ...cropReport.unused.slice(0, 10).map((module) =>
+                  h('span', { key: module.id, className: 'gp-shot', title: `预计省 ${module.saves}` }, `${module.label} ${module.saves}`))),
+              h('div', { className: 'gp-note', style: { fontSize: 10 } },
+                '这些模块在场景、预制体和脚本里都没有引用——在 Cocos 的「项目设置 → 功能裁剪」关掉它们就能瘦身。'))
+          : null,
         breakdown
           ? h('div', { className: 'gp-export-section' },
               h('div', { className: 'gp-export-head' },
@@ -753,6 +795,19 @@ window.__ModuleLoader__.load({
             (timeline?.frames?.length ?? 0) > 1
               ? h('button', {
                   className: 'gp-btn',
+                  onClick: async () => {
+                    try {
+                      const result = await call('/api/diff', { method: 'POST', body: '{}' })
+                      setDiffResult(result.ok ? result : { error: result.error })
+                    } catch (err) {
+                      setDiffResult({ error: String(err?.message ?? err) })
+                    }
+                  },
+                }, '对比')
+              : null,
+            (timeline?.frames?.length ?? 0) > 1
+              ? h('button', {
+                  className: 'gp-btn',
                   disabled: gifBusy,
                   onClick: async () => {
                     setGifBusy(true)
@@ -774,6 +829,12 @@ window.__ModuleLoader__.load({
                   `${new Date(frame.at).toLocaleTimeString().slice(0, 5)}`)))
             : h('div', { className: 'gp-note', style: { fontSize: 10 } },
                 '打开记录后，画面一变化就存一帧（最少间隔 4 秒）。干完活回来看这条时间线，比看直播有用。'),
+          diffResult
+            ? h('div', { className: 'gp-export-result' },
+                h('span', { style: { flex: 1, minWidth: 0, fontSize: 10 } },
+                  diffResult.error ? `对比失败：${diffResult.error}` : `像素变化 ${diffResult.changedPercent}%`),
+                diffResult.diff ? h('button', { className: 'gp-btn', onClick: () => void reveal(diffResult.diff) }, '查看差异图') : null)
+            : null,
           gifResult
             ? h('div', { className: 'gp-export-result' },
                 h('span', { style: { flex: 1, minWidth: 0, fontSize: 10, wordBreak: 'break-all' } },
@@ -1254,9 +1315,6 @@ window.__ModuleLoader__.load({
       const [showExport, setShowExport] = useState(false)
       const [showLogs, setShowLogs] = useState(false)
       const [logLines, setLogLines] = useState([])
-      const [timeline, setTimeline] = useState(null)
-      const [gifBusy, setGifBusy] = useState(false)
-      const [gifResult, setGifResult] = useState(null)
       const [board, setBoard] = useState(null)
       const [showBoard, setShowBoard] = useState(false)
       const [quality, setQualityState] = useState(() => {
@@ -1427,23 +1485,6 @@ window.__ModuleLoader__.load({
           setBusy(false)
         }
       }, [])
-
-      useEffect(() => {
-        if (!showExport) return undefined
-        let alive = true
-        const tick = async () => {
-          try {
-            const next = await call('/api/timeline')
-            if (alive) setTimeline(next)
-          } catch {}
-        }
-        void tick()
-        const timer = setInterval(() => void tick(), 3000)
-        return () => {
-          alive = false
-          clearInterval(timer)
-        }
-      }, [showExport])
 
       useEffect(() => {
         if (!showLogs) return undefined
