@@ -250,6 +250,20 @@ walk(windowTree, (n) => {
 })
 if (!dirChips.length) throw new Error('panel did not render a workspace directory chip')
 
+// the pipeline bar must show where this iteration stands
+const flowStages = []
+walk(windowTree, (n) => {
+  if (typeof n.props?.className === 'string' && n.props.className.split(' ').includes('gp-flow-stage')) flowStages.push(n)
+})
+if (flowStages.length !== 4) throw new Error(`pipeline bar shows ${flowStages.length} stages`)
+const activeStage = flowStages.filter((n) => n.props['data-state'] === 'active').length
+if (activeStage !== 1) throw new Error('exactly one stage must be active')
+const dirtyLabel = []
+walk(windowTree, (n) => {
+  if (typeof n.props?.className === 'string' && n.props.className.includes('gp-flow-label')) dirtyLabel.push(n.children)
+})
+if (!dirtyLabel.length) throw new Error('pipeline bar renders no label')
+
 // the window picker renders one option per capturable window
 react.__seed = [windowSnap, null, false, 0, 'pc', '', '', '', false, { mode: false, rect: null }, false, false, false, [], null, null, false, false, 'sharp', [{ hwnd: 1, title: 'Godot', width: 1280, height: 720 }], null, false]
 const pickerTree = renderPanel()

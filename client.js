@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.12.0'
+    const CLIENT_BUILD = '0.13.0'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -369,6 +369,19 @@ window.__ModuleLoader__.load({
 
     const css = `
       .gp-root{display:flex;flex-direction:column;height:100%;min-height:0;font-size:12px;color:inherit}
+      .gp-flow{display:flex;align-items:center;gap:8px;padding:6px 10px;font-size:11px;
+        border-bottom:1px solid color-mix(in srgb, currentColor 8%, transparent);opacity:.9}
+      .gp-flow-dot{width:7px;height:7px;border-radius:50%;background:color-mix(in srgb, currentColor 25%, transparent);flex:none}
+      .gp-flow-dot[data-active="1"]{background:#3fb950;box-shadow:0 0 0 3px color-mix(in srgb, #3fb950 25%, transparent);animation:gp-pulse 1.6s ease-in-out infinite}
+      @keyframes gp-pulse{0%,100%{opacity:1}50%{opacity:.45}}
+      .gp-flow-label{flex:1;min-width:0;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+      .gp-flow[data-phase="build"] .gp-flow-label,.gp-flow[data-phase="check"] .gp-flow-label{color:#c8892f}
+      .gp-flow-track{width:90px;height:5px;border-radius:3px;background:color-mix(in srgb, currentColor 12%, transparent);overflow:hidden;flex:none}
+      .gp-flow-fill{display:block;height:100%;background:#c8892f;transition:width .3s ease}
+      .gp-flow-time{font-variant-numeric:tabular-nums;opacity:.55}
+      .gp-stages{display:flex;gap:6px;flex:none;opacity:.75}
+      .gp-flow-stage[data-state="done"]{opacity:.55}
+      .gp-flow-stage[data-state="active"]{font-weight:600;opacity:1}
       .gp-chips{display:flex;gap:6px;padding:8px 10px;flex-wrap:wrap;align-items:center;border-bottom:1px solid color-mix(in srgb, currentColor 12%, transparent)}
       .gp-chip{border:1px solid color-mix(in srgb, currentColor 18%, transparent);background:transparent;color:inherit;
         border-radius:999px;padding:3px 10px;font-size:11px;cursor:pointer;white-space:nowrap}
@@ -1875,6 +1888,16 @@ window.__ModuleLoader__.load({
                 })))
         : empty
 
+      const flow = snap?.progress ?? null
+      const flowPhase = flow?.phase ?? 'idle'
+      const flowDirty = dirty.length
+      const stageOf = () => {
+        if (flowPhase === 'build') return 3
+        if (flowPhase === 'check' || flowPhase === 'playtest') return 2
+        if (flowPhase === 'run' || snap?.active) return 1
+        return flowDirty ? 0 : 1
+      }
+      const flowStage = stageOf()
       const pageHealth = snap?.health ?? null
       const healthErrors = pageHealth?.errors?.length ?? 0
       const healthFps = pageHealth?.fps ?? null
@@ -2007,6 +2030,33 @@ window.__ModuleLoader__.load({
           h('span', { className: 'gp-spacer' }),
           h('span', { className: 'gp-dirty', title: dirty.length ? `待运行：${dirty.slice(0, 12).join('、')}${dirty.length > 12 ? ' …' : ''}` : '已同步' },
             dirty.length ? [h('span', { key: 'd', className: 'gp-dot' }), `${dirty.length}`] : '')),
+        h('div', { className: 'gp-flow', 'data-phase': flowPhase },
+          h('span', { className: 'gp-flow-dot', 'data-active': flow?.agentActive ? '1' : '0', title: flow?.agentActive ? '工作区最近有改动（AI 正在干活）' : '工作区最近没有改动' }),
+          h('span', { className: 'gp-flow-label' },
+            flowPhase === 'build'
+              ? `${flow.label || '构建中'}${typeof flow?.percent === 'number' ? ` · ${flow.percent}%` : ''}`
+              : flowPhase === 'check'
+                ? '自检中…'
+                : flowPhase === 'playtest'
+                  ? `${flow.label || '回放中'}…`
+                  : flowPhase === 'run'
+                    ? '已运行'
+                    : flowDirty
+                      ? `${flowDirty} 个文件待运行`
+                      : '已同步'),
+          typeof flow?.percent === 'number' && flowPhase === 'build'
+            ? h('span', { className: 'gp-flow-track' }, h('span', { className: 'gp-flow-fill', style: { width: `${Math.max(3, Math.min(100, flow.percent))}%` } }))
+            : null,
+          flow?.elapsedMs > 1500 && flowPhase !== 'idle'
+            ? h('span', { className: 'gp-flow-time' }, `${Math.round(flow.elapsedMs / 1000)}s`)
+            : null,
+          h('span', { className: 'gp-stages' },
+            ...['改动', '运行', '自检', '打包'].map((name, index) =>
+              h('span', {
+                key: name,
+                className: 'gp-flow-stage',
+                'data-state': index < flowStage ? 'done' : index === flowStage ? 'active' : 'todo',
+              }, `${index < flowStage ? '✓' : index === flowStage ? '●' : '○'} ${name}`)))),
         rootPicker,
         picker,
         !health.mode || error

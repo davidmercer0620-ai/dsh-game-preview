@@ -1158,6 +1158,73 @@ export function apply(ctx, config = {}) {
   const proc = { child: null, config: null, startedAt: 0, logTail: [], exe: null }
   const state = { active: null, lastRoot: null, lastError: null }
   const exportJob = { running: false, target: null, startedAt: 0, log: [], result: null, error: null }
+  /**
+   * The panel's pipeline: what the agent changed, whether it has been run, has it
+   * been checked, has it been packaged. Long jobs also report a parsed percent so
+   * the bar is determinate instead of a spinner.
+   */
+  const progress = {
+    phase: 'idle',
+    label: '',
+    percent: null,
+    startedAt: 0,
+    finishedAt: 0,
+    lastChangeAt: 0,
+    note(kind, label = '', percent = null) {
+      if (kind === 'dirty') {
+        this.lastChangeAt = Date.now()
+        if (this.phase === 'idle') return
+        return
+      }
+      this.phase = kind
+      if (label) this.label = label
+      this.percent = percent
+      if (kind === 'idle') {
+        this.finishedAt = Date.now()
+        this.label = ''
+        this.percent = null
+      } else {
+        this.startedAt = Date.now()
+      }
+    },
+    snapshot() {
+      const now = Date.now()
+      const active = this.phase !== 'idle'
+      return {
+        phase: this.phase,
+        label: this.label,
+        percent: this.percent,
+        elapsedMs: active && this.startedAt ? now - this.startedAt : 0,
+        lastChangeAt: this.lastChangeAt || null,
+        agentActive: this.lastChangeAt > 0 && now - this.lastChangeAt < 90000,
+        startedAt: this.startedAt || null,
+        finishedAt: this.finishedAt || null,
+      }
+    },
+  }
+
+  /** Pull a progress number out of a build log line, when the tool prints one. */
+  function progressFromLine(line) {
+    const text = String(line)
+    let match = /(\d+)\s*(?:of|\/)\s*(\d+)\s*(?:tasks?|actions?|steps?)/i.exec(text)
+    if (match) {
+      const done = Number(match[1])
+      const total = Number(match[2])
+      if (total > 0) return Math.min(99, Math.round((done / total) * 100))
+    }
+    match = /\b(\d{1,3})%\b/.exec(text)
+    if (match) {
+      const value = Number(match[1])
+      if (value >= 0 && value <= 100) return value
+    }
+    match = /\[(\d+)\/(\d+)\]/.exec(text)
+    if (match) {
+      const done = Number(match[1])
+      const total = Number(match[2])
+      if (total > 0) return Math.min(99, Math.round((done / total) * 100))
+    }
+    return null
+  }
   const share = { server: null, port: null, token: null, root: null, expiresAt: 0, entry: 'index.html' }
   // Frames are only kept when the picture actually changes: an agent that works
   // for ten minutes in the editor produces a handful of meaningful stills, not
@@ -1288,6 +1355,8 @@ export function apply(ctx, config = {}) {
           return
         }
         entry.dirty.add(rel.split(sep).join('/'))
+        entry.lastChangeAt = Date.now()
+        progress.note('dirty')
       })
       entry.watcher.on('error', () => { entry.watcher = null })
     } catch (error) {
@@ -1506,6 +1575,8 @@ export function apply(ctx, config = {}) {
   }
 
   function exportPush(line) {
+    const parsed = progressFromLine(line)
+    if (parsed !== null && progress.phase !== 'idle') progress.percent = parsed
     exportJob.log.push(String(line).slice(0, 300))
     if (exportJob.log.length > 80) exportJob.log.shift()
   }
@@ -1596,6 +1667,7 @@ export function apply(ctx, config = {}) {
 
     exportJob.running = true
     exportJob.target = `task:${task.id}`
+    progress.note('build', task.label, 0)
     exportJob.startedAt = Date.now()
     exportJob.log = []
     exportJob.result = null
@@ -1623,6 +1695,7 @@ export function apply(ctx, config = {}) {
         exportPush(`失败：${exportJob.error}`)
       } finally {
         exportJob.running = false
+        progress.note('idle')
       }
     })()
 
@@ -1637,6 +1710,7 @@ export function apply(ctx, config = {}) {
 
     exportJob.running = true
     exportJob.target = target
+    progress.note('build', `导出 ${target}`, 0)
     exportJob.startedAt = Date.now()
     exportJob.log = []
     exportJob.result = null
@@ -2971,6 +3045,7 @@ print('ok')
       // produce a page that renders nothing, so they always use the served URL
       const engineBuild = has(workdir, 'assets') || has(workdir, 'cocos-js') || has(workdir, 'application.js')
       const bundleSafe = !moduleEntry && !engineBuild
+      progress.note('run', '启动预览', 100)
       state.active = {
         id: cfg.id, title: cfg.title, kind: 'file',
         staticRoot: serveRoot,
@@ -3191,6 +3266,7 @@ print('ok')
         running: Boolean(proc.child),
         active: state.active ?? null,
         health: telemetryStatus(state.lastRoot ?? undefined),
+        progress: progress.snapshot(),
         capture: { running: caps.running, fps: caps.fps, error: caps.error ?? null },
         lines: proc.logTail.slice(-count),
       })
@@ -3204,6 +3280,7 @@ print('ok')
    */
   async function runPlaytest(steps, options = {}) {
     if (!Array.isArray(steps) || !steps.length) throw new Error('steps 不能为空')
+    progress.note('playtest', `回放 ${steps.length} 步`, 0)
     const status = capture.status()
     if (!status.running) throw new Error('没有在抓帧：先运行或挂上一个窗口')
     const root = state.lastRoot ?? currentRootSync()
@@ -3238,6 +3315,7 @@ print('ok')
         }
       }
     }
+    progress.note('idle')
     return { ok: true, shots, log, dir: workDir, telemetry: telemetryStatus(root) }
   }
 
@@ -3251,6 +3329,7 @@ print('ok')
   async function runCheck(options = {}) {
     const root = state.lastRoot ?? currentRootSync()
     if (!root) throw new Error('还没有工作区')
+    progress.note('check', '自检中', 10)
     const stamp = Date.now()
     const dir = join(root, '.dsh-game-preview', 'checks', `check-${stamp}`)
     mkdirSync(dir, { recursive: true })
@@ -3350,6 +3429,7 @@ print('ok')
       } catch {}
     }
 
+    progress.note('idle')
     return {
       ok: true,
       verdict,
@@ -3369,6 +3449,26 @@ print('ok')
             : '不通过：页面报了错，先修这些',
     }
   }
+
+  registerTool({
+    name: 'game_preview_progress',
+    description:
+      'What the panel is doing right now: the pipeline phase (dirty / run / check / build), a parsed percent for long build jobs, elapsed time, and whether the workspace has been changing recently (the agent is working).',
+    parameters: {},
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute() {
+      const snap = progress.snapshot()
+      const root = state.lastRoot ?? currentRootSync()
+      let dirty = 0
+      try {
+        dirty = root ? snapshot(root).dirty.length : 0
+      } catch {}
+      return JSON.stringify({ ok: true, ...snap, dirty, root })
+    },
+  })
 
   registerTool({
     name: 'game_preview_check',
