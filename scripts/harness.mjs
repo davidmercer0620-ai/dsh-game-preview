@@ -218,6 +218,16 @@ const play = await (await fetch(base + '/api/playtest', {
 })).json()
 console.log('playtest:', play.ok, '| shots:', play.shots?.length ?? 0, '|', String(play.error ?? '').slice(0, 60))
 
+/* ------------------------------------------------ acceptance check */
+
+console.log('\n--- acceptance check ---')
+
+const check = await (await fetch(base + '/api/check', { method: 'POST', headers: JSON_HEADERS, body: '{}' })).json()
+console.log('verdict:', check.verdict, '| summary:', String(check.summary ?? check.error).slice(0, 70))
+console.log('reasons:', (check.reasons ?? []).length, '|', (check.reasons ?? []).slice(0, 2).join(' / ').slice(0, 100))
+if (!check.ok) throw new Error('check endpoint failed: ' + check.error)
+if (!['pass', 'warn', 'fail'].includes(check.verdict)) throw new Error('verdict must be pass, warn or fail')
+
 /* ------------------------------------------------ project board */
 
 console.log('\n--- project board ---')

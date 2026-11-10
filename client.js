@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.10.0'
+    const CLIENT_BUILD = '0.12.0'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -464,6 +464,8 @@ window.__ModuleLoader__.load({
         border:1px solid rgba(255,255,255,.25);background:rgba(12,12,14,.62);color:#eee;cursor:pointer;backdrop-filter:blur(4px)}
       .gp-health{display:flex;align-items:flex-start;gap:6px;justify-content:space-between;font-size:10px;opacity:.6;
         padding:4px 10px;border-bottom:1px solid color-mix(in srgb, currentColor 8%, transparent);word-break:break-all;line-height:1.5}
+      .gp-hint[data-verdict="fail"]{color:#d9534f}
+      .gp-hint[data-verdict="warn"]{color:#c8892f}
       .gp-hint{color:#c8892f;font-size:11px;padding:6px 10px}
       .gp-picker{display:flex;gap:6px;padding:6px 10px;align-items:center;border-bottom:1px solid color-mix(in srgb, currentColor 12%, transparent)}
     `
@@ -1316,6 +1318,8 @@ window.__ModuleLoader__.load({
       const [showLogs, setShowLogs] = useState(false)
       const [logLines, setLogLines] = useState([])
       const [board, setBoard] = useState(null)
+      const [check, setCheck] = useState(null)
+      const [checkBusy, setCheckBusy] = useState(false)
       const [showBoard, setShowBoard] = useState(false)
       const [quality, setQualityState] = useState(() => {
         try {
@@ -2025,6 +2029,13 @@ window.__ModuleLoader__.load({
               canCapture ? h('button', { className: 'gp-btn', style: { marginLeft: 8 }, onClick: () => void openPicker() }, '换一个窗口') : null)
           : null,
         stage,
+        check
+          ? h('div', { className: 'gp-hint', 'data-verdict': check.verdict },
+              h('strong', null, check.verdict === 'pass' ? '✅ ' : check.verdict === 'warn' ? '⚠️ ' : '❌ '),
+              check.summary,
+              (check.reasons ?? []).length ? ` · ${check.reasons.slice(0, 2).join(' · ')}` : '',
+              h('button', { className: 'gp-chip-x', onClick: () => setCheck(null), title: '收起' }, '✕'))
+          : null,
         showBoard
           ? h(ProjectBoard, {
               onClose: () => setShowBoard(false),
@@ -2089,6 +2100,22 @@ window.__ModuleLoader__.load({
           isWindow
             ? h('button', { className: 'gp-btn', title: '把当前画面存成 JPG', onClick: () => void saveShot() }, '⤓ 截图')
             : null,
+          h('button', {
+            className: 'gp-btn',
+            'data-primary': check ? (check.verdict === 'pass' ? '1' : '0') : '0',
+            title: '跑一遍自检：报错、帧率、画面、体积',
+            disabled: checkBusy,
+            onClick: async () => {
+              setCheckBusy(true)
+              try {
+                setCheck(await call('/api/check', { method: 'POST', body: '{}' }))
+              } catch (err) {
+                setCheck({ verdict: 'fail', summary: String(err?.message ?? err), reasons: [] })
+              } finally {
+                setCheckBusy(false)
+              }
+            },
+          }, checkBusy ? '自检中…' : check ? (check.verdict === 'pass' ? '✓ 自检' : check.verdict === 'warn' ? '⚠ 自检' : '✗ 自检') : '✓ 自检'),
           h('button', {
             className: 'gp-btn',
             'data-primary': showBoard ? '1' : '0',

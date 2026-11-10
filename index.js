@@ -2541,6 +2541,16 @@ print('ok')
       return
     }
 
+    if (path === '/api/check' && req.method === 'POST') {
+      const body = await readBody(req)
+      try {
+        send(res, headers, await runCheck(body ?? {}))
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 400)
+      }
+      return
+    }
+
     if (path === '/api/playtest' && req.method === 'POST') {
       const body = await readBody(req)
       try {
@@ -3231,6 +3241,163 @@ print('ok')
     return { ok: true, shots, log, dir: workDir, telemetry: telemetryStatus(root) }
   }
 
+
+  /**
+   * One command that answers "is this build still fine?".
+   * Collects the page's own health, an optional playtest, a pixel comparison
+   * against the previous check, and the bundle/crop report — then says pass,
+   * warn or fail with the evidence paths.
+   */
+  async function runCheck(options = {}) {
+    const root = state.lastRoot ?? currentRootSync()
+    if (!root) throw new Error('还没有工作区')
+    const stamp = Date.now()
+    const dir = join(root, '.dsh-game-preview', 'checks', `check-${stamp}`)
+    mkdirSync(dir, { recursive: true })
+    const baselineFile = join(root, '.dsh-game-preview', 'checks', 'last.json')
+    let baseline = null
+    try {
+      baseline = JSON.parse(readFileSync(baselineFile, 'utf8'))
+    } catch {}
+
+    const reasons = []
+    const evidence = []
+    let verdict = 'pass'
+
+    // 1. what the page itself says
+    const health = telemetryStatus(root)
+    if (health.errors?.length) {
+      verdict = 'fail'
+      reasons.push(`${health.errors.length} 个运行时错误，最新：${String(health.errors.at(-1)?.message ?? '').slice(0, 120)}`)
+    }
+    if (health.fps && health.fps < 30) {
+      if (verdict === 'pass') verdict = 'warn'
+      reasons.push(`帧率偏低：${health.fps} fps`)
+    }
+    if (!health.fps && !health.errors.length) {
+      reasons.push('页面没有上报任何数据（web 预览需要页面打开着）')
+    }
+
+    // 2. a fresh still, if a window is being captured
+    let shot = null
+    if (capture.status().running) {
+      const frame = (await capture.waitForFrame(0, 1500)) ?? capture.last()
+      if (frame) {
+        shot = join(dir, 'shot.jpg')
+        writeFileSync(shot, frame.jpeg)
+        evidence.push(shot)
+      }
+    }
+
+    // 3. optional scripted playtest
+    let playtest = null
+    if (Array.isArray(options.steps) && options.steps.length) {
+      try {
+        playtest = await runPlaytest(options.steps)
+        evidence.push(...playtest.shots.map((s) => s.file))
+        if (playtest.telemetry?.errors?.length) {
+          verdict = 'fail'
+          reasons.push(`回放期间出现 ${playtest.telemetry.errors.length} 个错误`)
+        }
+      } catch (error) {
+        if (verdict === 'pass') verdict = 'warn'
+        reasons.push(`回放没能执行：${String(error?.message ?? error).slice(0, 120)}`)
+      }
+    }
+
+    // 4. pixel comparison against the previous check
+    let changedPercent = null
+    if (shot && baseline?.shot && existsSync(baseline.shot)) {
+      try {
+        const diff = diffFrames({ a: baseline.shot, b: shot })
+        changedPercent = diff.changedPercent
+        if (diff.diff) evidence.push(diff.diff)
+        if (changedPercent > 35) {
+          if (verdict === 'pass') verdict = 'warn'
+          reasons.push(`画面变化 ${changedPercent}%（比上次自检）`)
+        }
+      } catch (error) {
+        reasons.push(`像素对比失败：${String(error?.message ?? error).slice(0, 100)}`)
+      }
+    }
+
+    // 5. bundle + cropping
+    let sizes = []
+    try {
+      sizes = sizeReport(root)
+    } catch {}
+    const crop = (() => {
+      try {
+        return cropReport(root)
+      } catch {
+        return null
+      }
+    })()
+    if (crop?.ok && crop.unused?.length) {
+      reasons.push(`引擎还有 ${crop.unused.length} 个未使用模块可裁剪（预计省 0.5–1.5 MB）`)
+      if (verdict === 'pass') verdict = 'warn'
+    }
+    const oversized = sizes.filter((row) => row.percent !== null && row.percent >= 90)
+    for (const row of oversized) {
+      if (verdict === 'pass') verdict = 'warn'
+      reasons.push(`${row.kind} 包已占上限 ${row.percent}%`)
+    }
+
+    // 6. remember this run as the next baseline
+    if (shot) {
+      try {
+        writeFileSync(baselineFile, JSON.stringify({ at: stamp, shot, changedPercent, dir }, null, 1))
+      } catch {}
+    }
+
+    return {
+      ok: true,
+      verdict,
+      reasons,
+      fps: health.fps ?? null,
+      errors: health.errors?.slice(-5) ?? [],
+      changedPercent,
+      evidence,
+      dir,
+      sizes: sizes.map((row) => ({ kind: row.kind, mb: Math.round((row.bytes / 1024 / 1024) * 100) / 100, percent: row.percent })),
+      crop: crop?.ok ? { unused: crop.unused.length, candidates: crop.unused.slice(0, 5).map((m) => m.label) } : null,
+      summary:
+        verdict === 'pass'
+          ? '通过：没有运行时错误，帧率正常，包在预算内'
+          : verdict === 'warn'
+            ? '可接受，但有需要注意的地方'
+            : '不通过：页面报了错，先修这些',
+    }
+  }
+
+  registerTool({
+    name: 'game_preview_check',
+    description:
+      'One-command acceptance check: reads the page errors and frame rate, takes a still, optionally replays a playtest, compares pixels with the previous check, and reports bundle size and cropping candidates — then says pass, warn or fail with evidence paths.',
+    parameters: {
+      steps: { type: 'array', description: 'Optional playtest steps to replay during the check.', items: { type: 'object' } },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => {
+        let parsed = null
+        try {
+          parsed = JSON.parse(value)
+        } catch {}
+        if (!parsed) return [{ type: 'text', text: value }]
+        const icon = parsed.verdict === 'pass' ? '✅' : parsed.verdict === 'warn' ? '⚠️' : '❌'
+        return [{ type: 'text', text: `${icon} ${parsed.summary}\n${(parsed.reasons ?? []).map((r) => `· ${r}`).join('\n')}` }]
+      },
+    },
+    async execute(args) {
+      try {
+        return JSON.stringify(await runCheck({ steps: args?.steps }))
+      } catch (error) {
+        return JSON.stringify({ ok: false, error: String(error?.message ?? error) })
+      }
+    },
+  })
+
   registerTool({
     name: 'game_preview_playtest',
     description:
@@ -3513,6 +3680,18 @@ print('ok')
       if (!root) return jsonResponse({ ok: false, error: '还没有工作区' }, 400)
       return jsonResponse(cropReport(root))
     })
+
+    add(`${API_PREFIX}/check`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      try {
+        return jsonResponse(await runCheck(body ?? {}))
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 400)
+      }
+    }, 'buffered')
 
     add(`${API_PREFIX}/playtest`, ['POST'], async (request) => {
       let body = {}
