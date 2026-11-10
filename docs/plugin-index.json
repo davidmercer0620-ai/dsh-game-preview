@@ -26,12 +26,12 @@
       },
       "versions": [
         {
-          "version": "0.11.3",
-          "publishTimestamp": 1794282690,
+          "version": "0.12.0",
+          "publishTimestamp": 1794293321,
           "source": {
             "type": "git",
             "url": "https://github.com/davidmercer0620-ai/dsh-game-preview.git",
-            "commit": "7a8d667ddbcf699a965f862a39623b98f2cf949f"
+            "commit": "faaf35c7feb360c908b97ae9eb9ff2d7065692f6"
           },
           "engines": {
             "dsh": "*"

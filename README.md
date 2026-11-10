@@ -81,6 +81,7 @@ Every engine has one loop that is faster than all the others. The panel picks th
 | **Build history** | Every export and project-script run is appended to `.dsh-game-preview/history.json`; the panel shows duration and byte delta |
 | **Project board** | A thumbnail wall of every workspace with its latest recorded frame; click to switch the panel |
 | **Playtest replay** | `game_preview_playtest` replays `{wait, click, key, shot}` steps against a window and returns the screenshots plus the page errors collected during the run |
+| **One-command check** | `game_preview_check` runs the whole chain — page errors, fps, a still, an optional playtest, a pixel diff against the previous check, bundle sizes and cropping candidates — and answers pass / warn / fail with evidence paths |
 | **Visual diff** | Compares two frames (or the last two recorded) with Pillow: changed-pixel share plus a diff image, so a broken UI is a number, not an opinion |
 | **Engine crop report** | Scans scenes, prefabs and scripts for engine component usage and lists which Cocos feature-cropping modules are unused, with the engine bundle size |
 | **Agent eyes** | `game_preview_screenshot` saves the current frame into the project and returns its path; `game_preview_logs` returns the process tail, so the agent can inspect the game itself |
