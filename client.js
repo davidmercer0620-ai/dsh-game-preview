@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.13.2'
+    const CLIENT_BUILD = '0.13.3'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -379,6 +379,7 @@ window.__ModuleLoader__.load({
       .gp-flow-track{width:90px;height:5px;border-radius:3px;background:color-mix(in srgb, currentColor 12%, transparent);overflow:hidden;flex:none}
       .gp-flow-fill{display:block;height:100%;background:#c8892f;transition:width .3s ease}
       .gp-flow-time{font-variant-numeric:tabular-nums;opacity:.55}
+      .gp-build{font-size:9px;opacity:.4;font-variant-numeric:tabular-nums;flex:none}
       .gp-stages{display:flex;gap:6px;flex:none;opacity:.75}
       .gp-flow-stage[data-state="done"]{opacity:.55}
       .gp-flow-stage[data-state="active"]{font-weight:600;opacity:1}
@@ -2050,6 +2051,7 @@ window.__ModuleLoader__.load({
           flow?.elapsedMs > 1500 && flowPhase !== 'idle'
             ? h('span', { className: 'gp-flow-time' }, `${Math.round(flow.elapsedMs / 1000)}s`)
             : null,
+          h('span', { className: 'gp-build', title: '客户端构建号：看到新号说明页面已是新版本' }, `v${CLIENT_BUILD}`),
           h('span', { className: 'gp-stages' },
             ...['改动', '运行', '自检', '打包'].map((name, index) =>
               h('span', {
