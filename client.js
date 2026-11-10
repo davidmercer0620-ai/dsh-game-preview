@@ -25,7 +25,7 @@ window.__ModuleLoader__.load({
     // renamed id leaves an empty pane behind (the module id is the scoped name)
     const ID = 'dsh-game-preview'
     // shown next to the host version so a stale bundle is obvious at a glance
-    const CLIENT_BUILD = '0.13.0'
+    const CLIENT_BUILD = '0.13.2'
     const APP = 'dsh-game-preview'
     // Same-origin first: the desktop app loads its page from file:// and carries
     // fetch over an IPC bridge, so an absolute loopback URL never arrives there.
@@ -2200,17 +2200,23 @@ window.__ModuleLoader__.load({
       }, [])
       return h('button', {
         type: 'button',
-        title: '游戏预览',
-        'aria-label': '游戏预览',
+        title: '打开游戏预览面板',
+        'aria-label': '打开游戏预览面板',
         onClick: open,
+        // a labelled control, because an icon-only button is what made the panel
+        // look "gone" after the sidebar got closed
         style: {
-          display: 'inline-flex', alignItems: 'center', justifyContent: 'center',
-          width: 28, height: 28, border: 0, borderRadius: 7, background: 'transparent',
-          color: 'inherit', cursor: 'pointer',
+          display: 'inline-flex', alignItems: 'center', gap: 5,
+          height: 26, padding: '0 9px', border: 0, borderRadius: 7, background: 'transparent',
+          color: 'inherit', cursor: 'pointer', fontSize: 12, whiteSpace: 'nowrap',
         },
-      }, h('svg', { width: 15, height: 15, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': true },
+        onMouseEnter: (event) => { try { event.currentTarget.style.background = 'color-mix(in srgb, currentColor 10%, transparent)' } catch {} },
+        onMouseLeave: (event) => { try { event.currentTarget.style.background = 'transparent' } catch {} },
+      },
+      h('svg', { width: 14, height: 14, viewBox: '0 0 24 24', fill: 'none', 'aria-hidden': true },
         h('rect', { x: 2.5, y: 5.5, width: 19, height: 13, rx: 2.2, stroke: 'currentColor', strokeWidth: 1.6 }),
-        h('path', { d: 'M10 10l4.5 2.5L10 15z', fill: 'currentColor' })))
+        h('path', { d: 'M10 10l4.5 2.5L10 15z', fill: 'currentColor' })),
+      '预览')
     }
 
     /* --------------------------------------------------------- error report */

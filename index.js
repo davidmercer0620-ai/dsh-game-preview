@@ -3161,7 +3161,7 @@ print('ok')
   registerTool({
     name: 'game_preview_run',
     description:
-      'Start or refresh the game preview panel for the current workspace: launches the dev server (or attaches to the running one), clears the dirty counter and returns the preview URL plus any start-up error. Use it after editing game code so the user can play the new build.',
+      'Start or refresh the game preview panel for the current workspace: launches the dev server (or attaches to the running one), clears the dirty counter and returns the preview URL plus any start-up error. Use it after editing game code so the user can play the new build. If the right sidebar was closed, tell the user to click the 「预览」 button in the chat header (or the right-sidebar toggle) to bring the panel back.',
     parameters: {
       config: { type: 'string', description: 'Config id from game_preview_status, e.g. cocos-web, godot-native, unity-native. Omit to use the detected default.' },
       url: { type: 'string', description: 'Override the preview URL (manual mode).' },
