@@ -200,6 +200,24 @@ if (staticUrl) {
   console.log('no static preview active, skipping injection check')
 }
 
+/* ------------------------------------------------ crop report + diff + playtest */
+
+console.log('\n--- optimisation tools ---')
+
+const crop = await (await fetch(base + '/api/crop')).json()
+console.log('crop ok:', crop.ok, '| scenes:', crop.scanned?.scenes, '| unused:', (crop.unused ?? []).length)
+if (crop.ok) console.log('  advice:', String(crop.advice).slice(0, 80))
+
+const diff = await (await fetch(base + '/api/diff', {
+  method: 'POST', headers: JSON_HEADERS, body: '{}',
+})).json()
+console.log('diff without frames:', diff.ok, '|', String(diff.error ?? diff.changedPercent ?? '').slice(0, 60))
+
+const play = await (await fetch(base + '/api/playtest', {
+  method: 'POST', headers: JSON_HEADERS, body: JSON.stringify({ steps: [{ wait: 60 }, { shot: 'after' }] }),
+})).json()
+console.log('playtest:', play.ok, '| shots:', play.shots?.length ?? 0, '|', String(play.error ?? '').slice(0, 60))
+
 /* ------------------------------------------------ project board */
 
 console.log('\n--- project board ---')

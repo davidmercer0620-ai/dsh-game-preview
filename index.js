@@ -747,6 +747,97 @@ function injectProbe(html) {
   return html.slice(0, head) + tag + html.slice(head)
 }
 
+
+/* ------------------------------------------------------- crop report */
+
+// Cocos Creator 3.x feature-cropping modules and the components that pull them in.
+const CROP_MODULES = [
+  { id: 'physics-2d', label: 'Physics 2D', saves: '~200 KB', patterns: [/RigidBody2D|BoxCollider2D|CircleCollider2D|PolygonCollider2D|PhysicsSystem2D/i] },
+  { id: 'physics-3d', label: 'Physics 3D', saves: '~450 KB', patterns: [/RigidBody\b|BoxCollider\b|SphereCollider|CapsuleCollider|MeshCollider|PhysicsSystem3D/i] },
+  { id: 'spine', label: 'Spine', saves: '~180 KB', patterns: [/sp\.Skeleton|spine/i] },
+  { id: 'dragonbones', label: 'DragonBones', saves: '~160 KB', patterns: [/dragonBones|ArmatureDisplay/i] },
+  { id: 'tiledmap', label: 'TiledMap', saves: '~120 KB', patterns: [/TiledMap|TiledLayer/i] },
+  { id: 'video', label: 'VideoPlayer', saves: '~90 KB', patterns: [/VideoPlayer/i] },
+  { id: 'webview', label: 'WebView', saves: '~60 KB', patterns: [/WebView/i] },
+  { id: 'particle-3d', label: 'Particle 3D', saves: '~150 KB', patterns: [/ParticleSystem3D|ParticleSystem\b/i] },
+  { id: 'skeletal-animation', label: 'Skeletal animation', saves: '~250 KB', patterns: [/SkeletalAnimation|SkinnedMeshRenderer/i] },
+  { id: '3d-mesh', label: '3D Mesh', saves: '~300 KB', patterns: [/MeshRenderer|Mesh\b|ModelComponent/i] },
+  { id: 'lighting', label: 'Lighting / shadows', saves: '~180 KB', patterns: [/DirectionalLight|SpotLight|PointLight|SphereLight/i] },
+  { id: 'terrain', label: 'Terrain', saves: '~140 KB', patterns: [/Terrain\b|TerrainCollider/i] },
+  { id: 'audio', label: 'Audio', saves: '~80 KB', patterns: [/AudioSource|AudioClip/i] },
+  { id: 'animation', label: 'Animation (keyframe)', saves: '~120 KB', patterns: [/cc\.Animation|AnimationComponent/i] },
+]
+
+function walkFiles(dir, filter, out = [], depth = 0) {
+  if (depth > 6 || out.length > 4000) return out
+  let entries = []
+  try {
+    entries = readdirSync(dir, { withFileTypes: true })
+  } catch {
+    return out
+  }
+  for (const entry of entries) {
+    if (entry.name.startsWith('.') || entry.name === 'node_modules' || entry.name === 'library' || entry.name === 'temp') continue
+    const full = join(dir, entry.name)
+    if (entry.isDirectory()) walkFiles(full, filter, out, depth + 1)
+    else if (filter.test(entry.name)) out.push(full)
+  }
+  return out
+}
+
+/**
+ * Which engine modules a project actually uses. Anything unused is a candidate
+ * for Cocos feature cropping, which is the cheapest way to shrink a mini-game
+ * bundle that is close to a store limit.
+ */
+function cropReport(root) {
+  const assetsDir = existsSync(join(root, 'assets')) ? join(root, 'assets') : existsSync(join(root, 'cocos', 'assets')) ? join(root, 'cocos', 'assets') : null
+  if (!assetsDir) return { ok: false, error: '没有找到 assets 目录（只支持 Cocos 工程）' }
+
+  const scenes = walkFiles(assetsDir, /\.(scene|prefab)$/i)
+  const scripts = walkFiles(assetsDir, /\.(ts|js)$/i)
+  const haystack = []
+  for (const file of scenes) {
+    try {
+      haystack.push(readFileSync(file, 'utf8'))
+    } catch {}
+  }
+  for (const file of scripts) {
+    try {
+      const text = readFileSync(file, 'utf8')
+      // only the parts that name components matter; full sources blow up the scan
+      haystack.push(text.slice(0, 40000))
+    } catch {}
+  }
+  const blob = haystack.join('\n')
+
+  const modules = CROP_MODULES.map((module) => {
+    const hits = module.patterns.reduce((count, pattern) => count + (blob.match(new RegExp(pattern.source, 'gi'))?.length ?? 0), 0)
+    return { id: module.id, label: module.label, saves: module.saves, hits, used: hits > 0 }
+  })
+  const unused = modules.filter((m) => !m.used)
+
+  let engineBytes = 0
+  for (const rel of ['build/web-mobile/cocos-js', 'build/web-desktop/cocos-js', 'cocos/build/web-mobile/cocos-js', 'cocos/build/web-desktop/cocos-js']) {
+    const dir = join(root, rel)
+    if (!existsSync(dir)) continue
+    engineBytes = dirSize(dir)
+    break
+  }
+
+  return {
+    ok: true,
+    assetsDir,
+    scanned: { scenes: scenes.length, scripts: scripts.length },
+    engineBytes,
+    modules,
+    unused: unused.map((m) => ({ id: m.id, label: m.label, saves: m.saves })),
+    advice: unused.length
+      ? `未使用、可以关闭：${unused.map((m) => m.label).join('、')}。在 Cocos Creator 的「项目设置 → 功能裁剪」里关掉它们，通常能省 0.5–1.5 MB。`
+      : '所有常见引擎模块都有引用，裁剪空间有限；可以考虑合并贴图与压缩音频。',
+  }
+}
+
 /* ------------------------------------------------------------- html bundle */
 
 const BUNDLE_MAX_BYTES = 12 * 1024 * 1024
@@ -1728,6 +1819,49 @@ export function apply(ctx, config = {}) {
     }
   }
 
+  /**
+   * Pixel difference between two frames (or the last two recorded frames), so a
+   * change that broke the UI is obvious instead of "looks the same to me".
+   */
+  function diffFrames(body) {
+    const root = state.lastRoot ?? currentRootSync()
+    let a = body?.a ? resolve(String(body.a)) : null
+    let b = body?.b ? resolve(String(body.b)) : null
+    if (!a || !b) {
+      const frames = timeline.frames.filter((f) => existsSync(f.file))
+      if (frames.length < 2) throw new Error('至少需要两张画面：先打开记录，或显式传 a / b 两个文件')
+      a = frames[frames.length - 2].file
+      b = frames[frames.length - 1].file
+    }
+    if (!existsSync(a) || !existsSync(b)) throw new Error('文件不存在')
+    const python = findPython()
+    if (!python) throw new Error('需要带 Pillow 的 Python（pip install pillow）')
+    const out = join(root ? timelineDir(root) : dirname(b), `diff-${Date.now()}.png`)
+    const script = `
+import sys
+from PIL import Image, ImageChops
+a, b, out = sys.argv[1], sys.argv[2], sys.argv[3]
+ia = Image.open(a).convert('RGB')
+ib = Image.open(b).convert('RGB')
+if ia.size != ib.size:
+    ib = ib.resize(ia.size)
+diff = ImageChops.difference(ia, ib)
+bbox = diff.getbbox()
+total = ia.size[0] * ia.size[1]
+changed = 0
+if bbox:
+    gray = diff.convert('L').point(lambda v: 255 if v > 24 else 0)
+    changed = sum(gray.histogram()[255:])
+    diff.save(out)
+print(round(changed * 100.0 / total, 2) if total else 0)
+print(bbox is not None)
+`
+    const result = spawnSync(python, ['-c', script, a, b, out], { encoding: 'utf8', timeout: 60000 })
+    if (result.status !== 0) throw new Error(String(result.stderr ?? '').slice(0, 300) || '对比失败')
+    const [percent] = String(result.stdout).trim().split(/\s+/)
+    return { ok: true, a, b, changedPercent: Number(percent) || 0, diff: existsSync(out) ? out : null }
+  }
+
   function timelineDir(root) {
     return join(root, '.dsh-game-preview', 'timeline')
   }
@@ -2379,6 +2513,36 @@ print('ok')
       return
     }
 
+    if (path === '/api/crop' && req.method === 'GET') {
+      const root = state.lastRoot ?? currentRootSync()
+      if (!root) {
+        send(res, headers, { ok: false, error: '还没有工作区' }, 400)
+        return
+      }
+      send(res, headers, cropReport(root))
+      return
+    }
+
+    if (path === '/api/playtest' && req.method === 'POST') {
+      const body = await readBody(req)
+      try {
+        send(res, headers, await runPlaytest(body?.steps, body))
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 400)
+      }
+      return
+    }
+
+    if (path === '/api/diff' && req.method === 'POST') {
+      const body = await readBody(req)
+      try {
+        send(res, headers, diffFrames(body))
+      } catch (error) {
+        send(res, headers, { ok: false, error: String(error?.message ?? error) }, 400)
+      }
+      return
+    }
+
     if (path === '/api/projects' && req.method === 'GET') {
       send(res, headers, { ok: true, projects: projectBoard() })
       return
@@ -3005,6 +3169,98 @@ print('ok')
     },
   })
 
+  /**
+   * A playtest is a list of steps replayed against the attached window: it turns
+   * "did my change break the game?" into screenshots plus the page's own errors.
+   * Steps: {wait:ms} · {click:[x,y]} (0..1 of the window) · {key:'Space'} · {shot:'name'}
+   */
+  async function runPlaytest(steps, options = {}) {
+    if (!Array.isArray(steps) || !steps.length) throw new Error('steps 不能为空')
+    const status = capture.status()
+    if (!status.running) throw new Error('没有在抓帧：先运行或挂上一个窗口')
+    const root = state.lastRoot ?? currentRootSync()
+    const workDir = root ? join(root, '.dsh-game-preview', 'playtests', `run-${Date.now()}`) : null
+    if (workDir) mkdirSync(workDir, { recursive: true })
+    const shots = []
+    const log = []
+    for (const [index, step] of steps.entries()) {
+      const delay = Math.max(0, Math.min(60000, Number(step?.wait) || 0))
+      if (delay) await new Promise((r) => setTimeout(r, delay))
+      if (step?.click) {
+        const [x, y] = step.click
+        await capture.pointer(Number(x), Number(y), 'move')
+        await capture.pointer(Number(x), Number(y), 'down')
+        await new Promise((r) => setTimeout(r, Number(step.hold) || 60))
+        await capture.pointer(Number(x), Number(y), 'up')
+        log.push(`#${index} click ${x},${y}`)
+      }
+      if (step?.key) {
+        await capture.key(String(step.key), true)
+        await new Promise((r) => setTimeout(r, 40))
+        await capture.key(String(step.key), false)
+        log.push(`#${index} key ${step.key}`)
+      }
+      if (step?.shot) {
+        const frame = capture.last()
+        if (frame && workDir) {
+          const file = join(workDir, `${String(shots.length).padStart(2, '0')}-${String(step.shot).replace(/[^\w.-]+/g, '-').slice(0, 32)}.jpg`)
+          writeFileSync(file, frame.jpeg)
+          shots.push({ label: step.shot, file })
+          log.push(`#${index} shot ${step.shot}`)
+        }
+      }
+    }
+    return { ok: true, shots, log, dir: workDir, telemetry: telemetryStatus(root) }
+  }
+
+  registerTool({
+    name: 'game_preview_playtest',
+    description:
+      'Replay a scripted playtest against the attached window and return screenshots plus the page errors collected during it. Steps are {wait:ms}, {click:[x,y]} with 0..1 window coordinates, {key:"Space"}, {shot:"label"}. Use it to check whether a change broke the game instead of guessing.',
+    parameters: {
+      steps: { type: 'array', description: 'Ordered steps: {wait}, {click:[x,y]}, {key}, {shot:label}.', items: { type: 'object' } },
+    },
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(args) {
+      try {
+        const result = await runPlaytest(args?.steps)
+        return JSON.stringify({
+          ok: true,
+          dir: result.dir,
+          shots: result.shots.map((s) => s.file),
+          log: result.log.slice(0, 20),
+          errors: result.telemetry.errors.slice(-5),
+          fps: result.telemetry.fps,
+        })
+      } catch (error) {
+        return JSON.stringify({ ok: false, error: String(error?.message ?? error) })
+      }
+    },
+  })
+
+  registerTool({
+    name: 'game_preview_optimize',
+    description:
+      'Analyse which engine modules a Cocos project actually uses (scenes, prefabs and scripts) and list the feature-cropping candidates that would shrink the bundle, plus the engine bundle size.',
+    parameters: {},
+    output: {
+      schema: { type: 'string' },
+      render: (_args, value) => [{ type: 'text', text: value }],
+    },
+    async execute(_args, exec) {
+      const root = await currentRoot(exec)
+      try {
+        const report = cropReport(root)
+        return JSON.stringify({ ...report, hint: report.ok && report.unused.length ? 'These modules have no references in scenes, prefabs or scripts.' : undefined })
+      } catch (error) {
+        return JSON.stringify({ ok: false, error: String(error?.message ?? error) })
+      }
+    },
+  })
+
   registerTool({
     name: 'game_preview_console',
     description:
@@ -3233,6 +3489,36 @@ print('ok')
       const params = new URL(String(request?.url ?? ''), originOf()).searchParams
       return jsonResponse(telemetryStatus(params.get('root') ?? undefined))
     })
+
+    add(`${API_PREFIX}/crop`, ['GET'], () => {
+      const root = state.lastRoot ?? currentRootSync()
+      if (!root) return jsonResponse({ ok: false, error: '还没有工作区' }, 400)
+      return jsonResponse(cropReport(root))
+    })
+
+    add(`${API_PREFIX}/playtest`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      try {
+        return jsonResponse(await runPlaytest(body?.steps, body))
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 400)
+      }
+    }, 'buffered')
+
+    add(`${API_PREFIX}/diff`, ['POST'], async (request) => {
+      let body = {}
+      try {
+        body = await request.json()
+      } catch {}
+      try {
+        return jsonResponse(diffFrames(body))
+      } catch (error) {
+        return jsonResponse({ ok: false, error: String(error?.message ?? error) }, 400)
+      }
+    }, 'buffered')
 
     add(`${API_PREFIX}/projects`, ['GET'], () => jsonResponse({ ok: true, projects: projectBoard() }))
 
