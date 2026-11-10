@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.11.0–0.11.3 — 2026-11-10
+
+三件验证工具，回答"AI 改了 30 个文件，游戏还能玩吗？"
+
+- **回放**：`game_preview_playtest` / `POST /api/playtest` 按 `{wait, click, key, shot}` 步骤驱动窗口，产出截图 + 期间页面报错
+- **视觉对比**：`POST /api/diff` 用 Pillow 比较两帧（默认最近两帧），给出像素变化比例和差异图
+- **引擎裁剪**：`game_preview_optimize` / `GET /api/crop` 扫场景/预制体/脚本里的组件用法，列出未使用的 Cocos 功能模块
+- 实测（炉石传说）：7 场景、看到 `cc.Vec4×42 / Graphics×31 / cc.Camera×7`、**14 个模块可裁**、引擎包 3.96 MB；两帧对比 **0.1%**
+
 ## 0.10.0 — 2026-11-10
 
 Agent 最缺的不是"能操作"，而是"能看见结果"。这一版让被预览的页面自己开口：

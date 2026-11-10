@@ -80,6 +80,9 @@ Every engine has one loop that is faster than all the others. The panel picks th
 | **Phone preview by QR** | Shares the running static build over the LAN behind a random token, shows a QR (host-side python-qrcode, no client dependency), expires after 30 minutes |
 | **Build history** | Every export and project-script run is appended to `.dsh-game-preview/history.json`; the panel shows duration and byte delta |
 | **Project board** | A thumbnail wall of every workspace with its latest recorded frame; click to switch the panel |
+| **Playtest replay** | `game_preview_playtest` replays `{wait, click, key, shot}` steps against a window and returns the screenshots plus the page errors collected during the run |
+| **Visual diff** | Compares two frames (or the last two recorded) with Pillow: changed-pixel share plus a diff image, so a broken UI is a number, not an opinion |
+| **Engine crop report** | Scans scenes, prefabs and scripts for engine component usage and lists which Cocos feature-cropping modules are unused, with the engine bundle size |
 | **Agent eyes** | `game_preview_screenshot` saves the current frame into the project and returns its path; `game_preview_logs` returns the process tail, so the agent can inspect the game itself |
 | **The page reports itself** | Every served document gets a tiny probe: uncaught errors with stacks, unhandled rejections, `console.error`, failed asset loads, and a measured frame rate. The chips row shows `⚠ 3` or `58fps`, and `game_preview_console` hands the same list to the agent |
 | **Hotkeys** | `F` full-bleed · `R` reload · `Esc` leave |
